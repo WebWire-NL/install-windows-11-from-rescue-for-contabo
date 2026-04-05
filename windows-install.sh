@@ -64,9 +64,7 @@ menuentry "windows installer" {
 }
 EOF
 
-cd /root/windisk
-
-mkdir winfile
+mkdir -p /tmp/winfile
 
 # Allow a custom ISO URL to be supplied, otherwise use the default Windows 11 ISO URL
 DEFAULT_ISO_URL="https://software.download.prss.microsoft.com/dbazure/Win11_25H2_English_x64_v2.iso?t=9b44bc26-4bf0-474e-963f-1796cd6a8c33&P1=1775499486&P2=601&P3=2&P4=Gb73mWwBfDwJfQzPKXUjOLuE4sq%2bJWCcs71bMBaRbIdEynbv0jZL%2f0WC%2bg6Fjq9ex3wjTcSXYABnKlFiilffsHa3inuR9EJ9gD3o2hNQL2hfLUDBkE3OegAgu%2fJ9cMniiQheWUZvWYKvJt%2fCkAjB%2ftg57XIK1PhIIZ6hfvhlSj67VlIZbVFRMfiw4yCdQhG6WVfen2k0jIOIELD05rF%2b8MK5c8oAVk%2fbwgOJb17yBZ9V5qOaqYvOWu49%2f5JItaqFhfk%2f%2fhP%2fymQqjy2IdCELOVkxeatMjHVBIbzXkz%2ba1TFc6lPJFIxFfVcNICwJv4WxrLctsfkpcF1ehA8WaxA%2bCw%3d%3d"
@@ -99,14 +97,15 @@ done
 wait "$ARIA2_PID"
 echo "[INFO] aria2 download process completed with exit code $?"
 
-# Mount the Windows 11 ISO
-mount -o loop /root/win11.iso winfile
+# Mount the Windows 11 ISO in a stable native path
+umount /tmp/winfile 2>/dev/null || true
+mount -o loop /root/win11.iso /tmp/winfile
 
 # Ensure /mnt/sources and /mnt/sources/virtio directories exist
 mkdir -p /mnt/sources/virtio
 
 # Verify that the ISO is mounted correctly
-if ! mountpoint -q /root/windisk/winfile; then
+if ! mountpoint -q /tmp/winfile; then
   echo "[ERROR] ISO is not mounted. Please check the mount command."
   exit 1
 fi
@@ -128,8 +127,9 @@ reg add HKLM\SYSTEM\Setup\LabConfig /v BypassCPUCheck /t REG_DWORD /d 1 /f
 reg add HKLM\SYSTEM\Setup\LabConfig /v BypassStorageCheck /t REG_DWORD /d 1 /f
 EOF
 
-# Ensure the batch script is copied to the installer
-cp /mnt/sources/bypass-tpm-secureboot.bat /root/windisk/winfile/sources/
+# Ensure the batch script is copied to the installer target
+mkdir -p /mnt/sources/virtio/sources
+cp /mnt/sources/bypass-tpm-secureboot.bat /mnt/sources/virtio/sources/
 
 # Provide instructions for manual execution during setup
 echo "[INFO] A batch script to bypass TPM and Secure Boot checks has been added."
@@ -137,7 +137,7 @@ echo "[INFO] If needed, you can manually execute it from the X: drive during set
 echo "[INFO] The batch script now bypasses additional checks: RAM, CPU, and Storage."
 
 # Proceed with the existing commands
-rsync -avz --progress winfile/* /mnt/sources/virtio
+rsync -avz --progress /tmp/winfile/* /mnt/sources/virtio
 
 cd /mnt/sources
 
