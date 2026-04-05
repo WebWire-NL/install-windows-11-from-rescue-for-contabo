@@ -1,0 +1,11 @@
+id_rsa.pub
+scp-test.txt
+remote_resume_check.ps1
+check_resume.sh
+new_vps_key
+new_vps_key.pub
+vps_deploy_rsa
+vps_deploy_rsa.pub
+win11_deploy
+win11_deploy.pub
+*.log
