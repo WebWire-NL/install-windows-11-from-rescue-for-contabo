@@ -20,8 +20,38 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+swap_active() {
+  swapon --show --noheadings | grep -q .
+}
+
+create_temp_swap() {
+  local swapfile=/mnt/windows-swapfile
+  local min_kb=$((4 * 1024 * 1024))
+  local avail_kb
+
+  avail_kb=$(df --output=avail -k /mnt | tail -n 1 | tr -d '[:space:]')
+  if [ -z "$avail_kb" ] || [ "$avail_kb" -lt "$min_kb" ]; then
+    echo "[WARN] Not enough free space on /mnt to create temporary swap. Available: ${avail_kb}K." >&2
+    return 1
+  fi
+
+  rm -f "$swapfile"
+  dd if=/dev/zero of="$swapfile" bs=1M count=4096 conv=fdatasync status=none
+  chmod 600 "$swapfile"
+  mkswap "$swapfile"
+  swapon "$swapfile"
+  echo "[INFO] Temporary swap enabled on $swapfile."
+}
+
+if ! swap_active; then
+  echo "[INFO] No swap active; attempting to create temporary swap on /mnt."
+  if ! create_temp_swap; then
+    echo "[WARN] Could not create temporary swap. Apt may fail on low-memory systems." >&2
+  fi
+fi
+
 apt update -y
-apt install -y grub2 filezilla gparted wimtools aria2
+apt install -y grub2 filezilla gparted wimtools aria2 gdisk
 
 #Get the disk size in GB and convert to MB
 disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
@@ -95,7 +125,13 @@ else
 fi
 
 # Use aria2 for resumable downloads with a session file
-ISO_FILE="${2:-/mnt/win11.iso}"
+if [ -n "${2:-}" ]; then
+  ISO_FILE="$2"
+elif [ -f /mnt/test-win11.iso ]; then
+  ISO_FILE="/mnt/test-win11.iso"
+else
+  ISO_FILE="/mnt/win11.iso"
+fi
 EXPECTED_SHA256="${3:-}"
 ISO_BASE=$(basename "$ISO_FILE")
 SESSION_FILE="${ISO_FILE}.aria2"
