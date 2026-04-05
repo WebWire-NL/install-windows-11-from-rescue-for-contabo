@@ -1,3 +1,10 @@
+# Ensure all /dev/sda partitions are unmounted and swap is off before partitioning
+echo "Deactivating swap and unmounting all /dev/sda partitions..."
+swapoff -a
+for part in $(lsblk -ln -o NAME | grep '^sda' | grep -v '^sda$'); do
+	umount /dev/$part 2>/dev/null || true
+done
+echo "All /dev/sda partitions unmounted and swap deactivated."
 #!/bin/bash
 
 apt update -y
