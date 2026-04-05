@@ -21,7 +21,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 apt update -y
-apt install -y grub2 filezilla gparted wimtools
+apt install -y grub2 filezilla gparted wimtools aria2
 
 #Get the disk size in GB and convert to MB
 disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
@@ -95,7 +95,6 @@ else
 fi
 
 # Use aria2 for resumable downloads with a session file
-apt install -y aria2
 ISO_FILE="${2:-/mnt/win11.iso}"
 EXPECTED_SHA256="${3:-}"
 ISO_BASE=$(basename "$ISO_FILE")
