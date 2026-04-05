@@ -1,8 +1,27 @@
 #!/bin/bash
+set -euo pipefail
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  cat <<EOF
+Usage: $0 [ISO_URL] [ISO_FILE] [EXPECTED_SHA256]
+
+  ISO_URL         Optional Windows ISO download URL.
+  ISO_FILE        Optional target ISO path (default: /mnt/win11.iso).
+  EXPECTED_SHA256 Optional SHA256 checksum for ISO validation.
+
+Example:
+  $0 "https://example.com/Windows.iso" /mnt/win11.iso abc123...def456
+EOF
+  exit 0
+fi
+
+if [ "$EUID" -ne 0 ]; then
+  echo "[ERROR] This script must be run as root." >&2
+  exit 1
+fi
 
 apt update -y
-
-apt install grub2 filezilla gparted wimtools -y
+apt install -y grub2 filezilla gparted wimtools
 
 #Get the disk size in GB and convert to MB
 disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
