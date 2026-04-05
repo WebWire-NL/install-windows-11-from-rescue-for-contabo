@@ -75,19 +75,31 @@ else
   echo "[INFO] No URL supplied; using default Windows 11 ISO URL."
 fi
 
-# Use aria2 for resumable downloads with custom progress summary
+# Use aria2 for resumable downloads with a session file
 apt install -y aria2
 ISO_FILE="/mnt/win11.iso"
+ISO_BASE=$(basename "$ISO_FILE")
+SESSION_FILE="${ISO_FILE}.aria2"
 LOG="/mnt/aria2-download.log"
-rm -f "$LOG"
-rm -f "$ISO_FILE".aria2
 
-# Start aria2 download in the background and write log for our summary
+echo "[INFO] Download target: $ISO_FILE"
+echo "[INFO] Session file: $SESSION_FILE"
+
+if pgrep -f "aria2c .*--dir=/mnt .*--out=${ISO_BASE}" >/dev/null 2>&1; then
+  echo "[WARN] Found existing aria2 download process for $ISO_BASE. Stopping stale process."
+  pgrep -f "aria2c .*--dir=/mnt .*--out=${ISO_BASE}" | xargs -r kill
+  sleep 5
+fi
+
+mkdir -p "$(dirname "$ISO_FILE")"
+touch "$SESSION_FILE" "$LOG"
+
 aria2c --continue=true --file-allocation=none --enable-http-keep-alive=true \
-  --max-connection-per-server=10 --split=16 --min-split-size=2M \
-  --max-tries=5 --retry-wait=10 --timeout=60 \
+  --max-connection-per-server=4 --split=8 --min-split-size=4M \
+  --max-tries=10 --retry-wait=15 --timeout=60 \
   --summary-interval=5 --console-log-level=warn \
-  --log="$LOG" --dir=/mnt --out=$(basename "$ISO_FILE") "$ISO_URL" &
+  --log="$LOG" --save-session="$SESSION_FILE" --save-session-interval=30 \
+  --dir=/mnt --out="$ISO_BASE" "$ISO_URL" &
 ARIA2_PID=$!
 
 echo "[INFO] Started aria2 download with PID $ARIA2_PID"
@@ -96,7 +108,7 @@ echo "[INFO] Started aria2 download with PID $ARIA2_PID"
 while kill -0 "$ARIA2_PID" 2>/dev/null; do
     sleep 5
     echo "[INFO] Download progress summary:"
-    tail -n 12 "$LOG" | grep -E '^\[|^\*\*\*' || true
+    grep -E '^\[' "$LOG" | tail -n 12 || true
     echo "---"
 done
 
@@ -107,7 +119,6 @@ echo "[INFO] aria2 download process completed with exit code $?"
 umount /tmp/winfile 2>/dev/null || true
 mount -o loop "$ISO_FILE" /tmp/winfile
 
-# Ensure /mnt/sources and /mnt/sources/virtio directories exist
 mkdir -p /mnt/sources/virtio
 
 # Verify that the ISO is mounted correctly
@@ -117,13 +128,15 @@ if ! mountpoint -q /tmp/winfile; then
 fi
 
 # Verify that boot.wim exists before proceeding
-if [ ! -f /mnt/boot.wim ]; then
-  echo "[ERROR] boot.wim not found in /mnt. Please check the file paths."
+if [ ! -f /tmp/winfile/sources/boot.wim ]; then
+  echo "[ERROR] boot.wim not found in /tmp/winfile/sources. Please check the mount path."
   exit 1
 fi
 
-# Create a batch script to bypass TPM and Secure Boot checks
-cat <<EOF > /mnt/sources/bypass-tpm-secureboot.bat
+# Copy installer files and inject the bypass batch script
+rsync -avz --progress /tmp/winfile/ /mnt/sources/virtio/
+mkdir -p /mnt/sources/virtio/sources
+cat <<EOF > /mnt/sources/virtio/sources/bypass-tpm-secureboot.bat
 @echo off
 REM Bypass TPM and Secure Boot checks during Windows setup
 reg add HKLM\SYSTEM\Setup\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f
@@ -133,24 +146,13 @@ reg add HKLM\SYSTEM\Setup\LabConfig /v BypassCPUCheck /t REG_DWORD /d 1 /f
 reg add HKLM\SYSTEM\Setup\LabConfig /v BypassStorageCheck /t REG_DWORD /d 1 /f
 EOF
 
-# Ensure the batch script is copied to the installer target
-mkdir -p /mnt/sources/virtio/sources
-cp /mnt/sources/bypass-tpm-secureboot.bat /mnt/sources/virtio/sources/
+echo "[INFO] A batch script to bypass TPM, Secure Boot, RAM, CPU, and Storage checks has been added."
 
-# Provide instructions for manual execution during setup
-echo "[INFO] A batch script to bypass TPM and Secure Boot checks has been added."
-echo "[INFO] If needed, you can manually execute it from the X: drive during setup."
-echo "[INFO] The batch script now bypasses additional checks: RAM, CPU, and Storage."
+cat <<EOF > /mnt/sources/virtio/cmd.txt
+add virtio /virtio_drivers
+EOF
 
-# Proceed with the existing commands
-rsync -avz --progress /tmp/winfile/* /mnt/sources/virtio
-
-cd /mnt/sources
-
-touch cmd.txt
-echo 'add virtio /virtio_drivers' >> cmd.txt
-
-wimlib-imagex update boot.wim 2 < cmd.txt
+wimlib-imagex update /mnt/sources/virtio/sources/boot.wim 2 < /mnt/sources/virtio/cmd.txt
 
 echo "[INFO] Script execution completed. Skipping the final reboot step."
 
