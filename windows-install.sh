@@ -77,11 +77,17 @@ fi
 
 # Use aria2 for resumable downloads with custom progress summary
 apt install -y aria2
-LOG="/root/aria2-download.log"
+ISO_FILE="/mnt/win11.iso"
+LOG="/mnt/aria2-download.log"
 rm -f "$LOG"
+rm -f "$ISO_FILE".aria2
 
 # Start aria2 download in the background and write log for our summary
-aria2c --continue=true --file-allocation=none --max-connection-per-server=4 --split=4 --summary-interval=1 --console-log-level=warn --log="$LOG" --dir=/root --out=win11.iso "$ISO_URL" &
+aria2c --continue=true --file-allocation=none --enable-http-keep-alive=true \
+  --max-connection-per-server=10 --split=16 --min-split-size=2M \
+  --max-tries=5 --retry-wait=10 --timeout=60 \
+  --summary-interval=5 --console-log-level=warn \
+  --log="$LOG" --dir=/mnt --out=$(basename "$ISO_FILE") "$ISO_URL" &
 ARIA2_PID=$!
 
 echo "[INFO] Started aria2 download with PID $ARIA2_PID"
@@ -99,7 +105,7 @@ echo "[INFO] aria2 download process completed with exit code $?"
 
 # Mount the Windows 11 ISO in a stable native path
 umount /tmp/winfile 2>/dev/null || true
-mount -o loop /root/win11.iso /tmp/winfile
+mount -o loop "$ISO_FILE" /tmp/winfile
 
 # Ensure /mnt/sources and /mnt/sources/virtio directories exist
 mkdir -p /mnt/sources/virtio
