@@ -77,47 +77,103 @@ fi
 
 # Use aria2 for resumable downloads with a session file
 apt install -y aria2
-ISO_FILE="/mnt/win11.iso"
+ISO_FILE="${2:-/mnt/win11.iso}"
+EXPECTED_SHA256="${3:-}"
 ISO_BASE=$(basename "$ISO_FILE")
 SESSION_FILE="${ISO_FILE}.aria2"
 LOG="/mnt/aria2-download.log"
 
+mkdir -p "$(dirname "$ISO_FILE")"
+mkdir -p "$(dirname "$LOG")"
+
 echo "[INFO] Download target: $ISO_FILE"
 echo "[INFO] Session file: $SESSION_FILE"
 
-if pgrep -f "aria2c .*--dir=/mnt .*--out=${ISO_BASE}" >/dev/null 2>&1; then
+touch "$SESSION_FILE" "$LOG"
+
+if pgrep -f "aria2c .*--dir=$(dirname "$ISO_FILE") .*--out=${ISO_BASE}" >/dev/null 2>&1; then
   echo "[WARN] Found existing aria2 download process for $ISO_BASE. Stopping stale process."
-  pgrep -f "aria2c .*--dir=/mnt .*--out=${ISO_BASE}" | xargs -r kill
+  pgrep -f "aria2c .*--dir=$(dirname "$ISO_FILE") .*--out=${ISO_BASE}" | xargs -r kill
   sleep 5
 fi
 
-mkdir -p "$(dirname "$ISO_FILE")"
-touch "$SESSION_FILE" "$LOG"
+aria2_exit_code=0
+if command -v aria2c >/dev/null 2>&1; then
+  set +e
+  aria2c --continue=true --file-allocation=none --enable-http-keep-alive=true \
+    --user-agent="Mozilla/5.0" --header="Accept: */*" --header="Referer: https://www.microsoft.com/" --header="Accept-Language: en-US,en;q=0.9" \
+    --max-connection-per-server=4 --split=8 --min-split-size=4M \
+    --max-tries=10 --retry-wait=15 --timeout=60 \
+    --summary-interval=5 --console-log-level=warn \
+    --log="$LOG" --input-file="$SESSION_FILE" --save-session="$SESSION_FILE" --save-session-interval=30 \
+    --dir="$(dirname "$ISO_FILE")" --out="$ISO_BASE" "$ISO_URL"
+  aria2_exit_code=$?
+  set -e
+else
+  aria2_exit_code=127
+fi
 
-aria2c --continue=true --file-allocation=none --enable-http-keep-alive=true \
-  --max-connection-per-server=4 --split=8 --min-split-size=4M \
-  --max-tries=10 --retry-wait=15 --timeout=60 \
-  --summary-interval=5 --console-log-level=warn \
-  --log="$LOG" --save-session="$SESSION_FILE" --save-session-interval=30 \
-  --dir=/mnt --out="$ISO_BASE" "$ISO_URL" &
-ARIA2_PID=$!
+echo "[INFO] aria2 download completed with exit code $aria2_exit_code"
 
-echo "[INFO] Started aria2 download with PID $ARIA2_PID"
+if [ "$aria2_exit_code" -ne 0 ]; then
+  echo "[WARN] aria2c failed with exit code $aria2_exit_code; falling back to curl."
+  current_size=$(stat -c %s "$ISO_FILE" 2>/dev/null || echo 0)
+  expected_size=$(curl -I -L -A 'Mozilla/5.0' --header 'Accept: */*' --header 'Referer: https://www.microsoft.com/' --header 'Accept-Language: en-US,en;q=0.9' "$ISO_URL" 2>/dev/null | awk '/^Content-Length:/ {print $2}' | tr -d '\r')
+  if [ -n "$expected_size" ] && [ "$current_size" -gt "$expected_size" ]; then
+    echo "[WARN] Existing file is larger than expected ($current_size > $expected_size), truncating."
+    truncate -s "$expected_size" "$ISO_FILE"
+    current_size="$expected_size"
+  fi
+  echo "[INFO] Resuming curl from ${current_size} bytes."
+  curl -C "$current_size" --location --user-agent "Mozilla/5.0" \
+    --header "Accept: */*" --header "Referer: https://www.microsoft.com/" --header "Accept-Language: en-US,en;q=0.9" \
+    --retry 10 --retry-delay 15 --retry-connrefused --max-time 600 --show-error --compressed \
+    --output "$ISO_FILE" "$ISO_URL"
+fi
 
-# Custom progress summary while aria2 is running
-while kill -0 "$ARIA2_PID" 2>/dev/null; do
-    sleep 5
-    echo "[INFO] Download progress summary:"
-    grep -E '^\[' "$LOG" | tail -n 12 || true
-    echo "---"
-done
+echo "[INFO] Finished download. Verifying ISO file."
+expected_size=$(curl -I -L -A 'Mozilla/5.0' --header 'Accept: */*' --header 'Referer: https://www.microsoft.com/' --header 'Accept-Language: en-US,en;q=0.9' "$ISO_URL" 2>/dev/null | awk '/^Content-Length:/ {print $2}' | tr -d '\r')
+actual_size=$(stat -c %s "$ISO_FILE" 2>/dev/null || echo 0)
+if [ -n "$expected_size" ]; then
+  if [ "$actual_size" -ne "$expected_size" ]; then
+    echo "[ERROR] ISO size mismatch: actual=$actual_size expected=$expected_size"
+    exit 1
+  fi
+  echo "[INFO] ISO size matches expected Content-Length: $actual_size bytes."
+else
+  echo "[WARN] Could not determine expected Content-Length from remote URL; skipping size verification."
+fi
 
-wait "$ARIA2_PID"
-echo "[INFO] aria2 download process completed with exit code $?"
+if [ -n "$EXPECTED_SHA256" ]; then
+  if ! command -v sha256sum >/dev/null 2>&1; then
+    echo "[ERROR] sha256sum is required for checksum verification but is not installed."
+    exit 1
+  fi
+  echo "[INFO] Verifying SHA256 checksum."
+  actual_sha256=$(sha256sum "$ISO_FILE" | awk '{print $1}')
+  if [ "$actual_sha256" != "$EXPECTED_SHA256" ]; then
+    echo "[ERROR] SHA256 mismatch. actual=$actual_sha256"
+    echo "[ERROR] expected=$EXPECTED_SHA256"
+    exit 1
+  fi
+  echo "[INFO] SHA256 checksum is correct."
+else
+  echo "[WARN] No expected SHA256 checksum provided; skipping checksum verification."
+fi
 
 # Mount the Windows 11 ISO in a stable native path
-umount /tmp/winfile 2>/dev/null || true
-mount -o loop "$ISO_FILE" /tmp/winfile
+if mountpoint -q /tmp/winfile 2>/dev/null; then
+  current_src=$(findmnt -n -o SOURCE --target /tmp/winfile 2>/dev/null || true)
+  if [ "$current_src" = "$ISO_FILE" ]; then
+    echo "[INFO] ISO already mounted at /tmp/winfile from $ISO_FILE."
+  else
+    echo "[WARN] /tmp/winfile is mounted from $current_src, not $ISO_FILE. Unmounting."
+    umount /tmp/winfile
+    mount -o loop "$ISO_FILE" /tmp/winfile
+  fi
+else
+  mount -o loop "$ISO_FILE" /tmp/winfile
+fi
 
 mkdir -p /mnt/sources/virtio
 
