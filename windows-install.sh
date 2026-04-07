@@ -159,12 +159,71 @@ setup_partitions_and_mounts() {
     mount /dev/sda2 /root/windisk
 }
 
-setup_download_environment() {
-    WINDOWS_ISO_URL=$(prompt_url "$DEFAULT_WINDOWS_ISO_URL" "Enter the URL for Windows.iso (leave blank to use default): ")
-    VIRTIO_ISO_URL=$(prompt_url "$DEFAULT_VIRTIO_ISO_URL" "Enter the URL for Virtio.iso (leave blank to use default): ")
+find_existing_downloads() {
+    if [ -f /mnt/zram0/windisk/Windows.iso ] || [ -f /mnt/zram0/windisk/VirtIO.iso ]; then
+        USE_ZRAM=1
+        WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
+        VIRTIO_ISO="/mnt/zram0/windisk/VirtIO.iso"
+        if [ -f "$WINDOWS_ISO" ]; then
+            WINDOWS_ISO_SIZE=$(stat -c%s "$WINDOWS_ISO")
+        fi
+        if [ -f "$VIRTIO_ISO" ]; then
+            VIRTIO_ISO_SIZE=$(stat -c%s "$VIRTIO_ISO")
+        fi
+        return 0
+    fi
 
-    WINDOWS_ISO_SIZE=$(get_content_length "$WINDOWS_ISO_URL")
-    VIRTIO_ISO_SIZE=$(get_content_length "$VIRTIO_ISO_URL")
+    if [ -f /root/windisk/Windows.iso ] || [ -f /root/windisk/VirtIO.iso ]; then
+        USE_ZRAM=0
+        WINDOWS_ISO="/root/windisk/Windows.iso"
+        VIRTIO_ISO="/root/windisk/VirtIO.iso"
+        if [ -f "$WINDOWS_ISO" ]; then
+            WINDOWS_ISO_SIZE=$(stat -c%s "$WINDOWS_ISO")
+        fi
+        if [ -f "$VIRTIO_ISO" ]; then
+            VIRTIO_ISO_SIZE=$(stat -c%s "$VIRTIO_ISO")
+        fi
+        return 0
+    fi
+
+    return 1
+}
+
+skip_existing_extraction() {
+    if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
+        SKIP_WINDOWS_DOWNLOAD=1
+        echo "Existing Windows installer files detected in /mnt. Skipping Windows URL prompt and download."
+        return 0
+    fi
+    return 1
+}
+
+setup_download_environment() {
+    if find_existing_downloads; then
+        echo "Existing downloaded ISOs detected. Skipping URL prompts."
+        WINDOWS_ISO_SIZE=${WINDOWS_ISO_SIZE:-0}
+        VIRTIO_ISO_SIZE=${VIRTIO_ISO_SIZE:-0}
+    else
+        SKIP_WINDOWS_DOWNLOAD=0
+        SKIP_VIRTIO_DOWNLOAD=0
+        skip_existing_extraction || true
+        if [ "${SKIP_WINDOWS_DOWNLOAD:-0}" -eq 0 ]; then
+            WINDOWS_ISO_URL=$(prompt_url "$DEFAULT_WINDOWS_ISO_URL" "Enter the URL for Windows.iso (leave blank to use default): ")
+            WINDOWS_ISO_SIZE=$(get_content_length "$WINDOWS_ISO_URL")
+        else
+            WINDOWS_ISO_URL=""
+            WINDOWS_ISO_SIZE=0
+        fi
+
+        if [ "${SKIP_VIRTIO_DOWNLOAD:-0}" -eq 0 ]; then
+            VIRTIO_ISO_URL=$(prompt_url "$DEFAULT_VIRTIO_ISO_URL" "Enter the URL for Virtio.iso (leave blank to use default): ")
+            VIRTIO_ISO_SIZE=$(get_content_length "$VIRTIO_ISO_URL")
+        else
+            VIRTIO_ISO_URL=""
+            VIRTIO_ISO_SIZE=0
+        fi
+    fi
+
     if [ -z "$WINDOWS_ISO_SIZE" ] || [ -z "$VIRTIO_ISO_SIZE" ]; then
         echo "ERROR: Unable to determine ISO sizes from HTTP headers."
         exit 1
@@ -174,69 +233,73 @@ setup_download_environment() {
     ZRAM_SIZE_MARGIN_MB=1024
     TOTAL_ISO_SIZE_MB=$((TOTAL_ISO_SIZE / 1024 / 1024 + ZRAM_SIZE_MARGIN_MB))
 
-    if [ -d /mnt/zram0/windisk ]; then
-        USE_ZRAM=1
+    if [ -n "${WINDOWS_ISO:-}" ] && [ -n "${VIRTIO_ISO:-}" ]; then
+        echo "Continuing with existing downloads: $WINDOWS_ISO and $VIRTIO_ISO"
+        return
+    fi
+
+    if [ "${SKIP_WINDOWS_DOWNLOAD:-0}" -eq 1 ] && [ "${SKIP_VIRTIO_DOWNLOAD:-0}" -eq 1 ]; then
+        echo "Both Windows and VirtIO media are already present in /mnt. Skipping download and zram setup."
+        return
+    fi
+
+    AVAILABLE_RAM_MB=0
+    if command_exists free; then
+        AVAILABLE_RAM_MB=$(free -m | awk '/^Mem:/ {print $7}')
+    fi
+    SAFE_RAM_MB=$((AVAILABLE_RAM_MB - 512))
+    if [ "$SAFE_RAM_MB" -lt 0 ]; then
+        SAFE_RAM_MB=0
+    fi
+
+    echo "Detected available RAM: ${AVAILABLE_RAM_MB}MB"
+    echo "Reserving 512MB; safe RAM for zram: ${SAFE_RAM_MB}MB"
+    echo "Estimated ISO download size: $((TOTAL_ISO_SIZE / 1024 / 1024))MB"
+    echo "Allocating zram with buffer: ${TOTAL_ISO_SIZE_MB}MB"
+
+    if [ "$TOTAL_ISO_SIZE_MB" -le "$SAFE_RAM_MB" ]; then
+        echo "Creating zram of size ${TOTAL_ISO_SIZE_MB}MB..."
+        if mountpoint -q /mnt/zram0 2>/dev/null; then
+            umount /mnt/zram0 || true
+        fi
+        if [ -e /dev/zram0 ]; then
+            swapoff /dev/zram0 2>/dev/null || true
+            echo 1 > /sys/block/zram0/reset 2>/dev/null || true
+        fi
+        modprobe zram >/dev/null 2>&1 || true
+        echo lz4 > /sys/block/zram0/comp_algorithm
+        echo "${TOTAL_ISO_SIZE_MB}M" > /sys/block/zram0/disksize
+        zram_disksize=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)
+        if [ "$zram_disksize" -eq 0 ]; then
+            echo "WARNING: zram disksize remained 0 after initialization. Falling back to disk."
+            USE_ZRAM=0
+        elif mkfs.ext4 -q /dev/zram0 && mkdir -p /mnt/zram0 && mount /dev/zram0 /mnt/zram0; then
+            USE_ZRAM=1
+            echo "zram mounted at /mnt/zram0."
+        else
+            echo "WARNING: zram format or mount failed. Falling back to disk."
+            USE_ZRAM=0
+        fi
+    else
+        echo "WARNING: Insufficient RAM for zram; using disk fallback."
+        USE_ZRAM=0
+    fi
+    if [ "$USE_ZRAM" -eq 1 ]; then
+        mkdir -p /mnt/zram0/windisk
         WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
         VIRTIO_ISO="/mnt/zram0/windisk/VirtIO.iso"
     else
-        AVAILABLE_RAM_MB=0
-        if command_exists free; then
-            AVAILABLE_RAM_MB=$(free -m | awk '/^Mem:/ {print $7}')
-        fi
-        SAFE_RAM_MB=$((AVAILABLE_RAM_MB - 512))
-        if [ "$SAFE_RAM_MB" -lt 0 ]; then
-            SAFE_RAM_MB=0
-        fi
+        mkdir -p /root/windisk
+        WINDOWS_ISO="/root/windisk/Windows.iso"
+        VIRTIO_ISO="/root/windisk/VirtIO.iso"
 
-        echo "Detected available RAM: ${AVAILABLE_RAM_MB}MB"
-        echo "Reserving 512MB; safe RAM for zram: ${SAFE_RAM_MB}MB"
-        echo "Estimated ISO download size: $((TOTAL_ISO_SIZE / 1024 / 1024))MB"
-        echo "Allocating zram with buffer: ${TOTAL_ISO_SIZE_MB}MB"
-
-        if [ "$TOTAL_ISO_SIZE_MB" -le "$SAFE_RAM_MB" ]; then
-            echo "Creating zram of size ${TOTAL_ISO_SIZE_MB}MB..."
-            if mountpoint -q /mnt/zram0 2>/dev/null; then
-                umount /mnt/zram0 || true
-            fi
-            if [ -e /dev/zram0 ]; then
-                swapoff /dev/zram0 2>/dev/null || true
-                echo 1 > /sys/block/zram0/reset 2>/dev/null || true
-            fi
-            modprobe zram >/dev/null 2>&1 || true
-            echo lz4 > /sys/block/zram0/comp_algorithm
-            echo "${TOTAL_ISO_SIZE_MB}M" > /sys/block/zram0/disksize
-            zram_disksize=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)
-            if [ "$zram_disksize" -eq 0 ]; then
-                echo "WARNING: zram disksize remained 0 after initialization. Falling back to disk."
-                USE_ZRAM=0
-            elif mkfs.ext4 -q /dev/zram0 && mkdir -p /mnt/zram0 && mount /dev/zram0 /mnt/zram0; then
-                USE_ZRAM=1
-                echo "zram mounted at /mnt/zram0."
-            else
-                echo "WARNING: zram format or mount failed. Falling back to disk."
-                USE_ZRAM=0
-            fi
-        else
-            echo "WARNING: Insufficient RAM for zram; using disk fallback."
-            USE_ZRAM=0
-        fi
-        if [ "$USE_ZRAM" -eq 1 ]; then
-            mkdir -p /mnt/zram0/windisk
-            WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
-            VIRTIO_ISO="/mnt/zram0/windisk/VirtIO.iso"
-        else
-            mkdir -p /root/windisk
-            WINDOWS_ISO="/root/windisk/Windows.iso"
-            VIRTIO_ISO="/root/windisk/VirtIO.iso"
-
-            REQUIRED_DISK_BYTES=$((TOTAL_ISO_SIZE + TOTAL_ISO_SIZE / 5))
-            DOWNLOAD_DIR="/root/windisk"
-            DOWNLOAD_AVAIL=$(df --output=avail "$DOWNLOAD_DIR" | tail -n 1)
-            DOWNLOAD_AVAIL_BYTES=$((DOWNLOAD_AVAIL * 1024))
-            if [ "$DOWNLOAD_AVAIL_BYTES" -lt "$REQUIRED_DISK_BYTES" ]; then
-                echo "ERROR: Not enough disk space on $DOWNLOAD_DIR for ISO downloads."
-                exit 1
-            fi
+        REQUIRED_DISK_BYTES=$((TOTAL_ISO_SIZE + TOTAL_ISO_SIZE / 5))
+        DOWNLOAD_DIR="/root/windisk"
+        DOWNLOAD_AVAIL=$(df --output=avail "$DOWNLOAD_DIR" | tail -n 1)
+        DOWNLOAD_AVAIL_BYTES=$((DOWNLOAD_AVAIL * 1024))
+        if [ "$DOWNLOAD_AVAIL_BYTES" -lt "$REQUIRED_DISK_BYTES" ]; then
+            echo "ERROR: Not enough disk space on $DOWNLOAD_DIR for ISO downloads."
+            exit 1
         fi
     fi
 }
@@ -389,8 +452,16 @@ main() {
     ensure_toolchain
     setup_partitions_and_mounts
     setup_download_environment
-    download_if_needed "$WINDOWS_ISO_URL" "$WINDOWS_ISO" "$WINDOWS_ISO_SIZE"
-    download_if_needed "$VIRTIO_ISO_URL" "$VIRTIO_ISO" "$VIRTIO_ISO_SIZE"
+    if [ -n "${WINDOWS_ISO_URL:-}" ] || [ -n "${WINDOWS_ISO:-}" ]; then
+        download_if_needed "$WINDOWS_ISO_URL" "$WINDOWS_ISO" "$WINDOWS_ISO_SIZE"
+    else
+        echo "Skipping Windows ISO download because installer media already exists."
+    fi
+    if [ -n "${VIRTIO_ISO_URL:-}" ] || [ -n "${VIRTIO_ISO:-}" ]; then
+        download_if_needed "$VIRTIO_ISO_URL" "$VIRTIO_ISO" "$VIRTIO_ISO_SIZE"
+    else
+        echo "Skipping VirtIO ISO download because driver media already exists."
+    fi
     copy_windows_media
     copy_virtio_media
     write_bypass_files
