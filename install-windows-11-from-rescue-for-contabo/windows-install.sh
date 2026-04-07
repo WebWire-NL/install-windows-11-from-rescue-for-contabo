@@ -84,12 +84,12 @@ fi
 TOTAL_ISO_SIZE_MB=$((TOTAL_ISO_SIZE_GB * 1024 + 512)) # Add 512 MB buffer
 AVAILABLE_RAM_MB=$(free -m | awk '/^Mem:/{print $7}')
 
-# Reset existing zram if it exists
+# Properly deactivate and reset existing zram if it exists
 if [ -e /dev/zram0 ]; then
-    echo "Resetting existing zram device..."
+    echo "Deactivating and resetting existing zram device..."
     swapoff /dev/zram0 2>/dev/null || true
     echo 1 > /sys/block/zram0/reset
-    echo "Existing zram device reset."
+    echo "Existing zram device deactivated and reset."
 fi
 
 if [ "$TOTAL_ISO_SIZE_MB" -le "$AVAILABLE_RAM_MB" ]; then
@@ -122,8 +122,10 @@ fi
 # Ensure download happens to the correct location
 if [ "$WINDOWS_ISO" = "/mnt/zram0/windisk/Windows.iso" ]; then
     echo "Downloading Windows ISO to zram..."
+    wget -O "$WINDOWS_ISO" "$windows_url"
 else
     echo "Downloading Windows ISO to local storage..."
+    wget -O "$WINDOWS_ISO" "$windows_url"
 fi
 
 # Download the ISOs
