@@ -5,17 +5,30 @@ echo "*** Update and Upgrade ***"
 apt update -y && apt upgrade -y
 echo "Update and Upgrade finish ***"
 
-echo "*** Install linux-image-amd64 ***"
-apt install -y linux-image-amd64
-echo "Install linux-image-amd64 finish ***"
+echo "*** Installing all required tools ***"
 
-echo "*** Reinstall initramfs-tools ***"
-apt install -y --reinstall initramfs-tools
-echo "Reinstall initramfs-tools finish ***"
+tools=(
+    linux-image-amd64
+    initramfs-tools
+    grub2
+    wimtools
+    ntfs-3g
+    gdisk
+    parted
+)
 
-echo "*** Install grub2, wimtools, ntfs-3g, gdisk ***"
-apt install -y grub2 wimtools ntfs-3g gdisk
-echo "Install grub2, wimtools, ntfs-3g, gdisk finish ***"
+for tool in "${tools[@]}"; do
+    echo "Installing $tool..."
+    apt install -y "$tool"
+    if dpkg -l | grep -q "$tool"; then
+        echo "$tool installed successfully."
+    else
+        echo "Failed to install $tool."
+        exit 1
+    fi
+done
+
+echo "All required tools installed successfully."
 
 echo "*** Get the disk size in GB and convert to MB ***"
 disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
