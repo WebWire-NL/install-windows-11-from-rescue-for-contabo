@@ -151,6 +151,15 @@ if command_exists wipefs; then
     echo "Wiping filesystem signatures on /dev/sda..."
     wipefs -a /dev/sda || true
 fi
+if command_exists partprobe; then
+    echo "Refreshing kernel partition table for /dev/sda..."
+    partprobe /dev/sda >/dev/null 2>&1 || true
+fi
+if command_exists blockdev; then
+    echo "Forcing kernel to reread /dev/sda partition table..."
+    blockdev --rereadpt /dev/sda >/dev/null 2>&1 || true
+fi
+sleep 3
 parted /dev/sda --script -- mklabel gpt
 parted /dev/sda --script -- mkpart primary ntfs 1MB ${part_size_mb}MB
 parted /dev/sda --script -- mkpart primary ntfs ${part_size_mb}MB 100%
