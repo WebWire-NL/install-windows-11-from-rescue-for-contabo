@@ -251,10 +251,10 @@ setup_partitions_and_mounts() {
             if [ "$RECREATE_DISK" -eq 1 ]; then
                 echo "Recreating /dev/sda as MBR because GPT has no BIOS boot partition."
             else
-                echo "ERROR: /dev/sda is GPT without a BIOS boot partition."
-                echo "This disk layout is unreliable for BIOS GRUB install."
-                echo "Run the script again with --recreate-disk to rebuild /dev/sda as MBR, or use UEFI mode."
-                exit 1
+                echo "WARNING: /dev/sda is GPT without a BIOS boot partition."
+                echo "This disk layout is unreliable for BIOS GRUB install, but the script will continue using existing installer files."
+                echo "If you prefer a cleaner MBR layout, rerun with --recreate-disk."
+                return
             fi
         else
             echo "Existing Windows installer files detected on /mnt. Skipping partition recreation."
