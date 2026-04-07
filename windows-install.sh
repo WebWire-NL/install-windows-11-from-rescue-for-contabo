@@ -298,12 +298,44 @@ if [ ! -f "/mnt/sources/boot.wim" ]; then
 fi
 
 echo "*** Inspecting boot.wim images ***"
-wimlib-imagex info /mnt/sources/boot.wim
-read -r -p "Enter the image index you want to update with VirtIO drivers: " image_index
+wimlib-imagex info /mnt/sources/boot.wim > /tmp/bootwim_info.txt
 
-echo "add virtio /virtio_drivers" > /tmp/wimcmd.txt
+echo "*** Selecting boot.wim image index automatically ***"
+auto_image_index=$(awk '
+    /Index:/ { idx=$2 }
+    /Name:/ {
+        if ($0 ~ /Windows Setup/ || $0 ~ /Microsoft Windows Setup/ || $0 ~ /Setup \(amd64\)/) {
+            print idx
+            exit
+        }
+        if ($0 ~ /Windows PE/ && fallback_idx == "") {
+            fallback_idx = idx
+        }
+    }
+    END {
+        if (idx != "" && fallback_idx == "") {
+            print idx
+        } else if (fallback_idx != "") {
+            print fallback_idx
+        }
+    }
+' /tmp/bootwim_info.txt)
+
+if [ -n "$auto_image_index" ]; then
+    echo "Auto-selected boot.wim image index: $auto_image_index"
+    image_index="$auto_image_index"
+else
+    read -r -p "Enter the image index you want to update with VirtIO drivers: " image_index
+fi
+
+if [ ! -d "/mnt/sources/virtio" ]; then
+    echo "ERROR: VirtIO source directory /mnt/sources/virtio not found."
+    exit 1
+fi
+
+echo "add /mnt/sources/virtio /virtio_drivers" > /tmp/wimcmd.txt
 wimlib-imagex update /mnt/sources/boot.wim "$image_index" < /tmp/wimcmd.txt
-rm -f /tmp/wimcmd.txt
+rm -f /tmp/wimcmd.txt /tmp/bootwim_info.txt
 
 echo "*** Installing GRUB ***"
 grub-install --root-directory=/mnt /dev/sda
