@@ -875,17 +875,24 @@ verify_grub_entry() {
         exit 1
     fi
 
-    if find_uefi_loader_path >/dev/null 2>&1; then
-        if ! grep -q 'menuentry "windows installer (UEFI)"' "$cfg_path"; then
-            echo "ERROR: UEFI GRUB entry is missing in $cfg_path"
+    if [ "${FIRMWARE_MODE}" = "uefi" ]; then
+        if find_uefi_loader_path >/dev/null 2>&1; then
+            if ! grep -q 'menuentry "windows installer (UEFI)"' "$cfg_path"; then
+                echo "ERROR: UEFI GRUB entry is missing in $cfg_path"
+                exit 1
+            fi
+            local uefi_path
+            uefi_path=$(find_uefi_loader_path)
+            if [ ! -f "/mnt${uefi_path}" ]; then
+                echo "ERROR: UEFI loader file /mnt${uefi_path} not found"
+                exit 1
+            fi
+        else
+            echo "ERROR: UEFI loader path is missing; cannot verify UEFI boot entry in UEFI mode"
             exit 1
         fi
-        local uefi_path
-        uefi_path=$(find_uefi_loader_path)
-        if [ ! -f "/mnt${uefi_path}" ]; then
-            echo "ERROR: UEFI loader file /mnt${uefi_path} not found"
-            exit 1
-        fi
+    else
+        echo "INFO: BIOS firmware mode detected; UEFI GRUB entry is not required."
     fi
 
     echo "GRUB boot entry validation passed."
