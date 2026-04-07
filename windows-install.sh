@@ -151,13 +151,21 @@ if command_exists wipefs; then
     echo "Wiping filesystem signatures on /dev/sda..."
     wipefs -a /dev/sda || true
 fi
+# Attempt to clear stale kernel state for /dev/sda without rebooting.
+echo "Cleaning up stale /dev/sda state..."
+umount /mnt 2>/dev/null || true
+umount /root/windisk 2>/dev/null || true
 if command_exists partprobe; then
-    echo "Refreshing kernel partition table for /dev/sda..."
     partprobe /dev/sda >/dev/null 2>&1 || true
 fi
 if command_exists blockdev; then
-    echo "Forcing kernel to reread /dev/sda partition table..."
     blockdev --rereadpt /dev/sda >/dev/null 2>&1 || true
+fi
+if command_exists partx; then
+    partx -u /dev/sda >/dev/null 2>&1 || true
+fi
+if command_exists kpartx; then
+    kpartx -d /dev/sda >/dev/null 2>&1 || true
 fi
 sleep 3
 parted /dev/sda --script -- mklabel gpt
