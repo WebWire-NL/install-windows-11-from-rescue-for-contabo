@@ -670,7 +670,10 @@ install_grub_if_needed() {
 
     cat > /mnt/boot/grub/grub.cfg <<'EOF'
 set default=0
-set timeout=2
+set timeout=1
+set timeout_style=hidden
+set menu_color_normal=white/black
+set menu_color_highlight=black/light-gray
 menuentry "windows installer" {
     insmod ntfs
     search --no-floppy --set=root --file=/bootmgr
