@@ -6,6 +6,10 @@ set -euo pipefail
 
 SELF_UPDATE_URL="https://raw.githubusercontent.com/WebWire-NL/install-windows-11-from-rescue-for-contabo/master/windows-install.sh"
 
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
 self_update_script() {
     if [ "${1:-}" = "--no-self-update" ]; then
         return 0
@@ -45,10 +49,6 @@ self_update_script "$@"
 
 DEFAULT_WINDOWS_ISO_URL="https://bit.ly/3UGzNcB"
 DEFAULT_VIRTIO_ISO_URL="https://bit.ly/4d1g7Ht"
-
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
 
 prompt_url() {
     local default="$1"
