@@ -74,9 +74,20 @@ get_content_length() {
 
 echo "*** Preparing system packages ***"
 ROOT_AVAIL_KB=$(df --output=avail / | tail -n 1)
+install_packages_to_tmp() {
+    mkdir -p /tmp/apt-archives /tmp/apt-lists /tmp/toolkit
+    apt-get -y -o Dir::State::lists=/tmp/apt-lists -o Dir::Cache::archives=/tmp/apt-archives update
+    apt-get -y -o Dir::State::lists=/tmp/apt-lists -o Dir::Cache::archives=/tmp/apt-archives --download-only --no-install-recommends install grub2 wimtools ntfs-3g gdisk rsync curl wget aria2 zram-tools
+    for deb in /tmp/apt-archives/*.deb; do
+        dpkg-deb -x "$deb" /tmp/toolkit
+    done
+    export PATH="/tmp/toolkit/usr/sbin:/tmp/toolkit/usr/bin:/tmp/toolkit/sbin:/tmp/toolkit/bin:$PATH"
+    export LD_LIBRARY_PATH="/tmp/toolkit/lib:/tmp/toolkit/usr/lib:${LD_LIBRARY_PATH:-}"
+}
+
 if [ "$ROOT_AVAIL_KB" -lt 500000 ]; then
-    echo "WARNING: low root filesystem space ($ROOT_AVAIL_KB KB). Skipping package installation."
-    echo "Make sure required tools are already available in the rescue environment."
+    echo "WARNING: low root filesystem space ($ROOT_AVAIL_KB KB). Attempting to provision required tools into /tmp instead of installing to root."
+    install_packages_to_tmp
 else
     mkdir -p /tmp/apt-archives /tmp/apt-lists
     apt-get -y -o Dir::State::lists=/tmp/apt-lists -o Dir::Cache::archives=/tmp/apt-archives update
@@ -86,14 +97,14 @@ else
 fi
 
 # Verify required tools exist before continuing
-required_cmds=(parted mkfs.ntfs mount rsync wimlib-imagex grub-install curl grep awk pgrep xargs)
+required_cmds=(parted mkfs.ntfs mount rsync wimlib-imagex grub-install curl grep awk pgrep xargs dpkg-deb)
 for cmd in "${required_cmds[@]}"; do
     if ! command_exists "$cmd"; then
         echo "ERROR: required command '$cmd' is missing."
         echo "If the rescue environment is low on disk space, free space or provide the missing tool in the environment before rerunning the script."
         exit 1
     fi
-done
+ done
 
 disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
 disk_size_mb=$((disk_size_gb * 1024))
