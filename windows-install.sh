@@ -491,7 +491,7 @@ install_grub_if_needed() {
     cat > /mnt/boot/grub/grub.cfg <<'EOF'
 menuentry "windows installer" {
     insmod ntfs
-    search --no-floppy --set=root --file=/bootmgr
+    search.file --no-floppy /bootmgr --set=root
     ntldr /bootmgr || chainloader +1
     boot
 }
