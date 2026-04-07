@@ -225,10 +225,11 @@ else
     VIRTIO_ISO="/root/windisk/VirtIO.iso"
 
     REQUIRED_DISK_BYTES=$((TOTAL_ISO_SIZE + TOTAL_ISO_SIZE / 5))
-    ROOT_AVAIL=$(df --output=avail / | tail -n 1)
-    ROOT_AVAIL_BYTES=$((ROOT_AVAIL * 1024))
-    if [ "$ROOT_AVAIL_BYTES" -lt "$REQUIRED_DISK_BYTES" ]; then
-        echo "ERROR: Not enough disk space on / for ISO downloads."
+    DOWNLOAD_DIR="/root/windisk"
+    DOWNLOAD_AVAIL=$(df --output=avail "$DOWNLOAD_DIR" | tail -n 1)
+    DOWNLOAD_AVAIL_BYTES=$((DOWNLOAD_AVAIL * 1024))
+    if [ "$DOWNLOAD_AVAIL_BYTES" -lt "$REQUIRED_DISK_BYTES" ]; then
+        echo "ERROR: Not enough disk space on $DOWNLOAD_DIR for ISO downloads."
         exit 1
     fi
 fi
