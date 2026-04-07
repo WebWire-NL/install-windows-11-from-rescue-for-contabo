@@ -227,23 +227,42 @@ fi
 
 USE_ZRAM=0
 if [ "$TOTAL_ISO_SIZE_MB" -le "$SAFE_RAM_MB" ]; then
-    echo "Creating zram of size ${TOTAL_ISO_SIZE_MB}MB..."
-    echo lz4 > /sys/block/zram0/comp_algorithm
-    echo "${TOTAL_ISO_SIZE_MB}M" > /sys/block/zram0/disksize
-    zram_disksize=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)
-    if [ "$zram_disksize" -eq 0 ]; then
-        echo "ERROR: zram disksize remained 0 after initialization."
-        echo "Skipping zram and using disk fallback."
-        ls -l /dev/zram0 /sys/block/zram0 2>/dev/null || true
-        cat /sys/block/zram0/disksize 2>/dev/null || true
-    elif mkfs.ext4 -q /dev/zram0 && mkdir -p /mnt/zram0 && mount /dev/zram0 /mnt/zram0; then
-        USE_ZRAM=1
-        echo "zram mounted at /mnt/zram0."
-    else
-        echo "WARNING: zram format or mount failed; checking zram state and using disk fallback."
-        ls -l /dev/zram0 /sys/block/zram0 2>/dev/null || true
-        cat /sys/block/zram0/disksize 2>/dev/null || true
-    fi
+    attempts=0
+    while [ "$attempts" -lt 2 ]; do
+        attempts=$((attempts + 1))
+        echo "Creating zram of size ${TOTAL_ISO_SIZE_MB}MB (attempt $attempts)..."
+        echo lz4 > /sys/block/zram0/comp_algorithm
+        echo "${TOTAL_ISO_SIZE_MB}M" > /sys/block/zram0/disksize
+        zram_disksize=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)
+
+        if [ "$zram_disksize" -eq 0 ]; then
+            echo "ERROR: zram disksize remained 0 after initialization."
+        elif mkfs.ext4 -q /dev/zram0 && mkdir -p /mnt/zram0 && mount /dev/zram0 /mnt/zram0; then
+            USE_ZRAM=1
+            echo "zram mounted at /mnt/zram0."
+            break
+        else
+            echo "WARNING: zram format or mount failed."
+        fi
+
+        if [ "$attempts" -eq 1 ]; then
+            echo "Retrying zram initialization after cleanup."
+            if command_exists mountpoint && mountpoint -q /mnt/zram0 2>/dev/null; then
+                umount /mnt/zram0 || true
+            fi
+            if [ -e /dev/zram0 ]; then
+                swapoff /dev/zram0 2>/dev/null || true
+                echo 1 > /sys/block/zram0/reset 2>/dev/null || true
+                echo 1 > /sys/class/zram-control/hot_remove 2>/dev/null || true
+            fi
+            modprobe zram >/dev/null 2>&1 || true
+            sleep 1
+        else
+            echo "Skipping zram and using disk fallback."
+            ls -l /dev/zram0 /sys/block/zram0 2>/dev/null || true
+            cat /sys/block/zram0/disksize 2>/dev/null || true
+        fi
+    done
 else
     echo "WARNING: Insufficient RAM for zram; using disk fallback."
 fi
