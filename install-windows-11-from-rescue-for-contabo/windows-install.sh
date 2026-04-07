@@ -112,11 +112,11 @@ else
     VIRTIO_ISO="/root/windisk/VirtIO.iso"
 fi
 
-# Log zram size for debugging
-if [ -e /sys/block/zram0/disksize ]; then
-    echo "zram size: $(cat /sys/block/zram0/disksize)"
+# Debugging logs
+if [ "$WINDOWS_ISO" = "/mnt/zram0/windisk/Windows.iso" ]; then
+    echo "DEBUG: zram successfully created. Download path set to $WINDOWS_ISO."
 else
-    echo "zram not created."
+    echo "DEBUG: zram not created. Download path set to $WINDOWS_ISO."
 fi
 
 # Ensure download happens to the correct location
