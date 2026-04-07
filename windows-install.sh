@@ -38,32 +38,42 @@ download_file() {
     local output="$2"
     local session="${output}.aria2"
     local log="${output}.aria2.log"
+    local ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    local dir
+    local base
+    dir="$(dirname "$output")"
+    base="$(basename "$output")"
 
     if command_exists aria2c; then
-        if pgrep -f "aria2c .*--dir=$(dirname \"$output\") .*--out=$(basename \"$output\")" >/dev/null 2>&1; then
+        if pgrep -f "aria2c .*--dir=$dir .*--out=$base" >/dev/null 2>&1; then
             echo "Stopping stale aria2c process for $output"
-            pgrep -f "aria2c .*--dir=$(dirname \"$output\") .*--out=$(basename \"$output\")" | xargs -r kill
+            pgrep -f "aria2c .*--dir=$dir .*--out=$base" | xargs -r kill
         fi
 
         echo "Downloading $output with aria2c (resume support)"
         set +e
         aria2c --continue=true --file-allocation=none --enable-http-keep-alive=true \
-            --max-connection-per-server=16 --split=16 --min-split-size=1M --timeout=60 --retry-wait=30 \
-            -d "$(dirname "$output")" -o "$(basename "$output")" --input-file="$session" "$url" >"$log" 2>&1
+            --max-connection-per-server=32 --split=32 --min-split-size=4M \
+            --http-accept-gzip=true --user-agent="$ua" --timeout=60 --retry-wait=30 \
+            -d "$dir" -o "$base" --input-file="$session" "$url" >"$log" 2>&1
         local aria2_rc=$?
         set -e
 
         if [ "$aria2_rc" -ne 0 ]; then
             echo "WARNING: aria2c failed with exit code $aria2_rc. Falling back to curl."
-            curl --retry 5 --retry-delay 10 --location --output "$output" "$url"
-            if [ $? -ne 0 ]; then
-                echo "WARNING: curl failed. Falling back to wget."
-                wget --tries=5 --timeout=60 -O "$output" "$url"
+            if command_exists curl; then
+                curl --retry 5 --retry-delay 10 --retry-connrefused --location --continue-at - \
+                    --user-agent "$ua" --output "$output" "$url"
+            else
+                echo "WARNING: curl not available. Falling back to wget."
+                wget --tries=5 --waitretry=5 --retry-connrefused --continue --timeout=60 \
+                    --user-agent="$ua" -O "$output" "$url"
             fi
         fi
     else
         echo "aria2c not available, downloading $output with wget"
-        wget --tries=5 --timeout=60 -O "$output" "$url"
+        wget --tries=5 --waitretry=5 --retry-connrefused --continue --timeout=60 \
+            --user-agent="$ua" -O "$output" "$url"
     fi
 }
 
