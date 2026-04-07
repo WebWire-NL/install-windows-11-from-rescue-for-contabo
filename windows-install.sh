@@ -73,9 +73,11 @@ get_content_length() {
 }
 
 echo "*** Preparing system packages ***"
-apt update -y
-apt upgrade -y
-apt install -y linux-image-amd64 initramfs-tools grub2 wimtools ntfs-3g gdisk rsync curl wget aria2 zram-tools
+apt-get update -y
+mkdir -p /tmp/apt-archives
+apt-get -y -o Dir::Cache::archives=/tmp/apt-archives --no-install-recommends install linux-image-amd64 initramfs-tools grub2 wimtools ntfs-3g gdisk rsync curl wget aria2 zram-tools
+apt-get -y -o Dir::Cache::archives=/tmp/apt-archives clean
+rm -rf /tmp/apt-archives
 
 disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
 disk_size_mb=$((disk_size_gb * 1024))
