@@ -10,6 +10,48 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+package_for_command() {
+    case "$1" in
+        mkfs.ntfs) echo ntfs-3g ;;
+        mkfs.ext4) echo e2fsprogs ;;
+        grub-install) echo grub-pc ;;
+        curl) echo curl ;;
+        rsync) echo rsync ;;
+        pgrep) echo procps ;;
+        awk) echo gawk ;;
+        xargs) echo findutils ;;
+        grep) echo grep ;;
+        mount|blockdev|partx|fdisk) echo util-linux ;;
+        dpkg-deb) echo dpkg ;;
+        modprobe) echo kmod ;;
+        partprobe|parted) echo parted ;;
+        *) echo "" ;;
+    esac
+}
+
+install_missing_dependencies() {
+    if ! command_exists apt-get; then
+        return 1
+    fi
+
+    local missing=()
+    for cmd in "$@"; do
+        local pkg
+        pkg=$(package_for_command "$cmd")
+        if [ -n "$pkg" ] && ! printf '%s\n' "${missing[@]}" | grep -xq "$pkg"; then
+            missing+=("$pkg")
+        fi
+    done
+
+    if [ "${#missing[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    echo "Installing missing dependency packages: ${missing[*]}"
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
+}
+
 self_update_script() {
     if [ "${1:-}" = "--no-self-update" ]; then
         return 0
@@ -110,12 +152,30 @@ download_file() {
 
 ensure_toolchain() {
     local required=(parted mkfs.ntfs mkfs.ext4 mount rsync grub-install curl grep awk pgrep xargs dpkg-deb modprobe partprobe blockdev partx)
+    local missing=()
+
     for cmd in "${required[@]}"; do
         if ! command_exists "$cmd"; then
-            echo "ERROR: required command '$cmd' is missing."
-            exit 1
+            missing+=("$cmd")
         fi
     done
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "Missing required commands: ${missing[*]}"
+        if install_missing_dependencies "${missing[@]}"; then
+            missing=()
+            for cmd in "${required[@]}"; do
+                if ! command_exists "$cmd"; then
+                    missing+=("$cmd")
+                fi
+            done
+        fi
+    fi
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "ERROR: required command(s) still missing: ${missing[*]}"
+        exit 1
+    fi
 }
 
 cleanup_partition_state() {
