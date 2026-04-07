@@ -53,8 +53,9 @@ download_file() {
         echo "Downloading $output with aria2c (resume support)"
         set +e
         aria2c --continue=true --file-allocation=none --enable-http-keep-alive=true \
-            --max-connection-per-server=32 --split=32 --min-split-size=4M \
-            --http-accept-gzip=true --user-agent="$ua" --timeout=60 --retry-wait=30 \
+            --enable-http2=true --max-connection-per-server=64 --split=64 --min-split-size=4M \
+            --max-tries=0 --retry-wait=15 --timeout=60 --retry-connrefused=true \
+            --download-result=full --user-agent="$ua" \
             -d "$dir" -o "$base" --input-file="$session" "$url" >"$log" 2>&1
         local aria2_rc=$?
         set -e
@@ -62,11 +63,11 @@ download_file() {
         if [ "$aria2_rc" -ne 0 ]; then
             echo "WARNING: aria2c failed with exit code $aria2_rc. Falling back to curl."
             if command_exists curl; then
-                curl --retry 5 --retry-delay 10 --retry-connrefused --location --continue-at - \
-                    --user-agent "$ua" --output "$output" "$url"
+                curl --http2 --compressed --retry 5 --retry-delay 10 --retry-connrefused \
+                    --location --continue-at - --user-agent "$ua" --output "$output" "$url"
             else
                 echo "WARNING: curl not available. Falling back to wget."
-                wget --tries=5 --waitretry=5 --retry-connrefused --continue --timeout=60 \
+                wget --tries=0 --waitretry=5 --retry-connrefused --continue --timeout=60 \
                     --user-agent="$ua" -O "$output" "$url"
             fi
         fi
