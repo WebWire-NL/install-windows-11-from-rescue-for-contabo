@@ -109,7 +109,7 @@ download_file() {
 }
 
 ensure_toolchain() {
-    local required=(parted mkfs.ntfs mkfs.ext4 mount rsync wimlib-imagex grub-install curl grep awk pgrep xargs dpkg-deb modprobe partprobe blockdev partx)
+    local required=(parted mkfs.ntfs mkfs.ext4 mount rsync grub-install curl grep awk pgrep xargs dpkg-deb modprobe partprobe blockdev partx)
     for cmd in "${required[@]}"; do
         if ! command_exists "$cmd"; then
             echo "ERROR: required command '$cmd' is missing."
@@ -489,6 +489,11 @@ patch_boot_wim() {
     if [ ! -f /mnt/sources/boot.wim ]; then
         echo "ERROR: /mnt/sources/boot.wim not found."
         exit 1
+    fi
+    if ! command_exists wimlib-imagex; then
+        echo "WARNING: wimlib-imagex not installed. Skipping boot.wim patch."
+        echo "Warning: VirtIO drivers will still be copied to /mnt/sources/virtio, but boot.wim injection will not be applied."
+        return
     fi
     echo "Inspecting boot.wim images..."
     wimlib-imagex info /mnt/sources/boot.wim > /tmp/bootwim_info.txt
