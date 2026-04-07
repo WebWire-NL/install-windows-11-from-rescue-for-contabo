@@ -75,9 +75,18 @@ get_content_length() {
 echo "*** Preparing system packages ***"
 ROOT_AVAIL_KB=$(df --output=avail / | tail -n 1)
 install_packages_to_tmp() {
-    mkdir -p /tmp/apt-archives /tmp/apt-lists /tmp/toolkit
-    apt-get -y -o Dir::State::lists=/tmp/apt-lists -o Dir::Cache::archives=/tmp/apt-archives update
-    apt-get -y -o Dir::State::lists=/tmp/apt-lists -o Dir::Cache::archives=/tmp/apt-archives --download-only --no-install-recommends install grub2 wimtools ntfs-3g gdisk rsync curl wget aria2 zram-tools
+    mkdir -p /tmp/apt-archives /tmp/apt-lists /tmp/apt-pkgcache /tmp/toolkit
+    export TMPDIR=/tmp
+    apt-get -y -o Dir::State::lists=/tmp/apt-lists \
+        -o Dir::Cache::archives=/tmp/apt-archives \
+        -o Dir::Cache::pkgcache=/tmp/apt-pkgcache/pkgcache.bin \
+        -o Dir::Cache::srcpkgcache=/tmp/apt-pkgcache/srcpkgcache.bin \
+        update
+    apt-get -y -o Dir::State::lists=/tmp/apt-lists \
+        -o Dir::Cache::archives=/tmp/apt-archives \
+        -o Dir::Cache::pkgcache=/tmp/apt-pkgcache/pkgcache.bin \
+        -o Dir::Cache::srcpkgcache=/tmp/apt-pkgcache/srcpkgcache.bin \
+        --download-only --no-install-recommends install grub2 wimtools ntfs-3g gdisk rsync curl wget aria2 zram-tools
     for deb in /tmp/apt-archives/*.deb; do
         dpkg-deb -x "$deb" /tmp/toolkit
     done
@@ -89,11 +98,24 @@ if [ "$ROOT_AVAIL_KB" -lt 500000 ]; then
     echo "WARNING: low root filesystem space ($ROOT_AVAIL_KB KB). Attempting to provision required tools into /tmp instead of installing to root."
     install_packages_to_tmp
 else
-    mkdir -p /tmp/apt-archives /tmp/apt-lists
-    apt-get -y -o Dir::State::lists=/tmp/apt-lists -o Dir::Cache::archives=/tmp/apt-archives update
-    apt-get -y -o Dir::State::lists=/tmp/apt-lists -o Dir::Cache::archives=/tmp/apt-archives --no-install-recommends install grub2 wimtools ntfs-3g gdisk rsync curl wget aria2 zram-tools
-    apt-get -y -o Dir::State::lists=/tmp/apt-lists -o Dir::Cache::archives=/tmp/apt-archives clean
-    rm -rf /tmp/apt-archives /tmp/apt-lists
+    mkdir -p /tmp/apt-archives /tmp/apt-lists /tmp/apt-pkgcache
+    export TMPDIR=/tmp
+    apt-get -y -o Dir::State::lists=/tmp/apt-lists \
+        -o Dir::Cache::archives=/tmp/apt-archives \
+        -o Dir::Cache::pkgcache=/tmp/apt-pkgcache/pkgcache.bin \
+        -o Dir::Cache::srcpkgcache=/tmp/apt-pkgcache/srcpkgcache.bin \
+        update
+    apt-get -y -o Dir::State::lists=/tmp/apt-lists \
+        -o Dir::Cache::archives=/tmp/apt-archives \
+        -o Dir::Cache::pkgcache=/tmp/apt-pkgcache/pkgcache.bin \
+        -o Dir::Cache::srcpkgcache=/tmp/apt-pkgcache/srcpkgcache.bin \
+        --no-install-recommends install grub2 wimtools ntfs-3g gdisk rsync curl wget aria2 zram-tools
+    apt-get -y -o Dir::State::lists=/tmp/apt-lists \
+        -o Dir::Cache::archives=/tmp/apt-archives \
+        -o Dir::Cache::pkgcache=/tmp/apt-pkgcache/pkgcache.bin \
+        -o Dir::Cache::srcpkgcache=/tmp/apt-pkgcache/srcpkgcache.bin \
+        clean
+    rm -rf /tmp/apt-archives /tmp/apt-lists /tmp/apt-pkgcache
 fi
 
 # Verify required tools exist before continuing
