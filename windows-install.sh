@@ -87,6 +87,22 @@ self_update_script() {
     rm -f "$tmp"
 }
 
+RECREATE_DISK=0
+PARSED_ARGS=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --recreate-disk)
+            RECREATE_DISK=1
+            shift
+            ;;
+        *)
+            PARSED_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${PARSED_ARGS[@]}"
+
 self_update_script "$@"
 
 DEFAULT_WINDOWS_ISO_URL="https://bit.ly/3UGzNcB"
@@ -232,13 +248,18 @@ setup_partitions_and_mounts() {
             return
         fi
         if parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]' | grep -q '^gpt$'; then
-            echo "ERROR: /dev/sda is GPT without a BIOS boot partition."
-            echo "This disk layout is unreliable for BIOS GRUB install."
-            echo "You may need to recreate the disk with MBR, add a BIOS boot partition, or boot in UEFI mode."
-            exit 1
+            if [ "$RECREATE_DISK" -eq 1 ]; then
+                echo "Recreating /dev/sda as MBR because GPT has no BIOS boot partition."
+            else
+                echo "ERROR: /dev/sda is GPT without a BIOS boot partition."
+                echo "This disk layout is unreliable for BIOS GRUB install."
+                echo "Run the script again with --recreate-disk to rebuild /dev/sda as MBR, or use UEFI mode."
+                exit 1
+            fi
+        else
+            echo "Existing Windows installer files detected on /mnt. Skipping partition recreation."
+            return
         fi
-        echo "Existing Windows installer files detected on /mnt. Skipping partition recreation."
-        return
     fi
 
     echo "Creating disk partitions..."
