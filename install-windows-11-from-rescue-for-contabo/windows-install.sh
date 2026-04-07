@@ -80,14 +80,21 @@ if mount | grep -q "/mnt/zram0"; then
     echo "Existing zram removed."
 fi
 
-# Create a new zram with appropriate size
-ZRAM_SIZE_MB=$((TOTAL_ISO_SIZE_GB * 1024 + 512)) # Add 512 MB buffer
+# Ensure zram is reset and created with the correct size
+TOTAL_ISO_SIZE_MB=$((TOTAL_ISO_SIZE_GB * 1024 + 512)) # Add 512 MB buffer
 AVAILABLE_RAM_MB=$(free -m | awk '/^Mem:/{print $7}')
 
-if [ "$ZRAM_SIZE_MB" -le "$AVAILABLE_RAM_MB" ]; then
-    echo "Creating zram of size ${ZRAM_SIZE_MB}MB..."
+# Reset existing zram if it exists
+if [ -e /dev/zram0 ]; then
+    echo "Resetting existing zram device..."
+    swapoff /dev/zram0 2>/dev/null || true
+    echo 1 > /sys/block/zram0/reset
+fi
+
+if [ "$TOTAL_ISO_SIZE_MB" -le "$AVAILABLE_RAM_MB" ]; then
+    echo "Creating zram of size ${TOTAL_ISO_SIZE_MB}MB..."
     echo lz4 > /sys/block/zram0/comp_algorithm
-    echo "${ZRAM_SIZE_MB}M" > /sys/block/zram0/disksize
+    echo "${TOTAL_ISO_SIZE_MB}M" > /sys/block/zram0/disksize
     if mkswap /dev/zram0 && swapon /dev/zram0; then
         mkdir -p /mnt/zram0/windisk
         WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
@@ -99,7 +106,7 @@ if [ "$ZRAM_SIZE_MB" -le "$AVAILABLE_RAM_MB" ]; then
         VIRTIO_ISO="/root/windisk/VirtIO.iso"
     fi
 else
-    echo "WARNING: Insufficient RAM to create zram of size ${ZRAM_SIZE_MB}MB. Falling back to local storage."
+    echo "WARNING: Insufficient RAM to create zram of size ${TOTAL_ISO_SIZE_MB}MB. Falling back to local storage."
     WINDOWS_ISO="/root/windisk/Windows.iso"
     VIRTIO_ISO="/root/windisk/VirtIO.iso"
 fi
