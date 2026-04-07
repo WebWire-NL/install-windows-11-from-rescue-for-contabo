@@ -201,8 +201,11 @@ skip_existing_extraction() {
 setup_download_environment() {
     if find_existing_downloads; then
         echo "Existing downloaded ISOs detected. Skipping URL prompts."
+        WINDOWS_ISO_URL=""
+        VIRTIO_ISO_URL=""
         WINDOWS_ISO_SIZE=${WINDOWS_ISO_SIZE:-0}
         VIRTIO_ISO_SIZE=${VIRTIO_ISO_SIZE:-0}
+        return
     else
         SKIP_WINDOWS_DOWNLOAD=0
         SKIP_VIRTIO_DOWNLOAD=0
@@ -324,6 +327,11 @@ download_if_needed() {
     if verify_file_size "$path" "$expected"; then
         echo "$path already exists and matches expected size. Skipping download."
         return
+    fi
+
+    if [ -z "${url:-}" ]; then
+        echo "ERROR: No URL provided for $path and the file is missing or incomplete."
+        exit 1
     fi
 
     echo "Downloading $path..."
