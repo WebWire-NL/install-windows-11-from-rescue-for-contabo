@@ -498,7 +498,7 @@ skip_existing_extraction() {
         SKIP_WINDOWS_DOWNLOAD=1
         echo "Existing Windows installer files detected in /mnt. Skipping Windows URL prompt and download."
     fi
-    if [ -d /mnt/sources/virtio ] && [ -f /mnt/sources/virtio/NetKVM/2k3/amd64/netkvm.sys ]; then
+    if [ -f /mnt/bootmgr ] && [ -d /mnt/sources/virtio ] && [ -f /mnt/sources/virtio/NetKVM/2k3/amd64/netkvm.sys ]; then
         SKIP_VIRTIO_DOWNLOAD=1
         echo "Existing VirtIO drivers detected in /mnt/sources/virtio. Skipping VirtIO URL prompt and download."
     fi
@@ -920,12 +920,26 @@ verify_grub_probe() {
     echo "GRUB probe validation passed."
 }
 
+mount_existing_partitions() {
+    mkdir -p /mnt /root/windisk
+
+    if ! mountpoint -q /mnt && [ -b /dev/sda1 ]; then
+        echo "Mounting existing /dev/sda1 at /mnt for validation..."
+        mount /dev/sda1 /mnt 2>/dev/null || true
+    fi
+    if ! mountpoint -q /root/windisk && [ -b /dev/sda2 ]; then
+        echo "Mounting existing /dev/sda2 at /root/windisk for validation..."
+        mount /dev/sda2 /root/windisk 2>/dev/null || true
+    fi
+}
+
 run_preflight_checks() {
     echo "*** Step: preflight check-only validation ***"
     verify_vps_compatibility
     verify_toolchain
 
-    mkdir -p /mnt /root/windisk
+    mount_existing_partitions
+
     if mountpoint -q /mnt; then
         echo "/mnt is mounted"
     else
