@@ -42,18 +42,13 @@ Automated script and instructions to install Windows 11 on a Contabo VPS from th
 3. Make the script executable and run it:
    ```
    chmod +x windows-install.sh
-   bash install-windows-11-from-rescue-for-contabo/windows-install.sh
+   bash windows-install.sh
    ```
    If the rescue shell does not honor the script shebang or executable flag, run it explicitly with bash:
    ```
    bash windows-install.sh
    ```
 4. The script will partition the disk, download Windows 11 and VirtIO drivers, and prepare everything. The VPS will reboot when done.
-
-If you need to resume a partially completed run, use the resume script instead:
-```bash
-bash windows-install-resume.sh
-```
 
 ### 5. Complete Windows 11 Installation via VNC
 1. In the Contabo panel, get your VNC connection info and connect with VNC Viewer.
