@@ -713,7 +713,7 @@ install_grub_if_needed() {
         grub-install --boot-directory=/mnt/boot --force /dev/sda
     fi
 
-    # Robust BIOS-style menuentry: assume Windows installer is on /dev/sda1
+    # Robust BIOS-style menuentry: search for the installer partition by /bootmgr
     cat > /mnt/boot/grub/grub.cfg <<'EOF'
 set default=0
 set timeout=1
@@ -721,10 +721,9 @@ set timeout_style=hidden
 set menu_color_normal=white/black
 set menu_color_highlight=black/light-gray
 
-menuentry "Windows installer (bootmgr on sda1)" {
-    insmod part_msdos
+menuentry "Windows installer" {
     insmod ntfs
-    set root=(hd0,msdos1)
+    search --no-floppy --set=root --file /bootmgr
     chainloader /bootmgr
 }
 EOF
