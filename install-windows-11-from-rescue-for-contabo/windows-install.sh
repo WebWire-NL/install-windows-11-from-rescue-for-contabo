@@ -121,10 +121,10 @@ fi
 
 # Ensure download happens to the correct location
 if [ "$WINDOWS_ISO" = "/mnt/zram0/windisk/Windows.iso" ]; then
-    echo "Downloading Windows ISO to zram..."
+    echo "Downloading Windows ISO to zram at $WINDOWS_ISO..."
     wget -O "$WINDOWS_ISO" "$windows_url"
 else
-    echo "Downloading Windows ISO to local storage..."
+    echo "Downloading Windows ISO to local storage at $WINDOWS_ISO..."
     wget -O "$WINDOWS_ISO" "$windows_url"
 fi
 
