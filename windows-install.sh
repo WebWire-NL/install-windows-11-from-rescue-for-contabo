@@ -149,9 +149,11 @@ sleep 30
 mkfs.ntfs -f /dev/sda1
 mkfs.ntfs -f /dev/sda2
 
-echo "*** Running gdisk recovery / fix commands ***"
-echo -e "r\ng\np\nw\nY\n" | gdisk /dev/sda
+echo "*** Refreshing partition table ***"
+partprobe /dev/sda
+sleep 5
 
+echo "*** Mounting partitions ***"
 mkdir -p /mnt
 mount /dev/sda1 /mnt
 mkdir -p /root/windisk
