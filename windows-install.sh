@@ -4,6 +4,45 @@ set -euo pipefail
 # Resume Windows install preparation after a partial run.
 # This script detects completed checkpoints and skips steps already done.
 
+SELF_UPDATE_URL="https://raw.githubusercontent.com/WebWire-NL/install-windows-11-from-rescue-for-contabo/master/windows-install.sh"
+
+self_update_script() {
+    if [ "${1:-}" = "--no-self-update" ]; then
+        return 0
+    fi
+
+    if [ ! -f "$0" ]; then
+        return 0
+    fi
+
+    local tmp
+    if command_exists curl; then
+        tmp=$(mktemp)
+        if ! curl -fsSL "$SELF_UPDATE_URL" > "$tmp"; then
+            rm -f "$tmp"
+            return 0
+        fi
+    elif command_exists wget; then
+        tmp=$(mktemp)
+        if ! wget -qO "$tmp" "$SELF_UPDATE_URL"; then
+            rm -f "$tmp"
+            return 0
+        fi
+    else
+        return 0
+    fi
+
+    if ! cmp -s "$0" "$tmp"; then
+        echo "A newer installer script version is available. Re-running the latest version."
+        bash "$tmp" --no-self-update "$@"
+        exit $?
+    fi
+
+    rm -f "$tmp"
+}
+
+self_update_script "$@"
+
 DEFAULT_WINDOWS_ISO_URL="https://bit.ly/3UGzNcB"
 DEFAULT_VIRTIO_ISO_URL="https://bit.ly/4d1g7Ht"
 
