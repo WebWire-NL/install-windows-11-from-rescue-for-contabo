@@ -641,13 +641,33 @@ patch_boot_wim() {
     touch /mnt/sources/boot.wim.virtio_patched
 }
 
+gpt_needs_blocklists() {
+    if ! command_exists parted; then
+        return 1
+    fi
+    local label
+    label=$(parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')
+    if [ "$label" != "gpt" ]; then
+        return 1
+    fi
+    if parted /dev/sda --script print | grep -q "bios_grub"; then
+        return 1
+    fi
+    return 0
+}
+
 install_grub_if_needed() {
     echo "Installing or updating GRUB on /dev/sda..."
     mkdir -p /mnt/boot/grub
-    if ! grub-install --boot-directory=/mnt/boot /dev/sda; then
+
+    if gpt_needs_blocklists; then
+        echo "GPT without BIOS boot partition detected. Installing GRUB with --force blocklists."
+        grub-install --boot-directory=/mnt/boot --force /dev/sda
+    elif ! grub-install --boot-directory=/mnt/boot /dev/sda; then
         echo "grub-install failed. Retrying with --force to allow blocklists on GPT."
         grub-install --boot-directory=/mnt/boot --force /dev/sda
     fi
+
     cat > /mnt/boot/grub/grub.cfg <<'EOF'
 set default=0
 set timeout=2
