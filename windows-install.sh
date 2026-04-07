@@ -445,7 +445,10 @@ install_grub_if_needed() {
     fi
     echo "Installing GRUB to /dev/sda..."
     mkdir -p /mnt/boot/grub
-    grub-install --root-directory=/mnt /dev/sda
+    if ! grub-install --boot-directory=/mnt/boot /dev/sda; then
+        echo "grub-install failed. Retrying with --force to allow blocklists on GPT."
+        grub-install --boot-directory=/mnt/boot --force /dev/sda
+    fi
     cat > /mnt/boot/grub/grub.cfg <<'EOF'
 menuentry "windows installer" {
     insmod ntfs
