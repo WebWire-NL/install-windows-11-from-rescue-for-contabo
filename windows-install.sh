@@ -232,12 +232,62 @@ skip_existing_extraction() {
     if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
         SKIP_WINDOWS_DOWNLOAD=1
         echo "Existing Windows installer files detected in /mnt. Skipping Windows URL prompt and download."
+    fi
+    if [ -d /mnt/sources/virtio ] && [ -f /mnt/sources/virtio/NetKVM/2k3/amd64/netkvm.sys ]; then
+        SKIP_VIRTIO_DOWNLOAD=1
+        echo "Existing VirtIO drivers detected in /mnt/sources/virtio. Skipping VirtIO URL prompt and download."
+    fi
+    if [ "${SKIP_WINDOWS_DOWNLOAD:-0}" -eq 1 ] || [ "${SKIP_VIRTIO_DOWNLOAD:-0}" -eq 1 ]; then
         return 0
     fi
     return 1
 }
 
+print_current_state() {
+    local installer_present=0
+    local virtio_present=0
+    local downloaded_windows_iso=0
+    local downloaded_virtio_iso=0
+
+    if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
+        installer_present=1
+    fi
+    if [ -d /mnt/sources/virtio ] && [ -f /mnt/sources/virtio/NetKVM/2k3/amd64/netkvm.sys ]; then
+        virtio_present=1
+    fi
+    if [ -f /mnt/zram0/windisk/Windows.iso ] || [ -f /root/windisk/Windows.iso ]; then
+        downloaded_windows_iso=1
+    fi
+    if [ -f /mnt/zram0/windisk/VirtIO.iso ] || [ -f /root/windisk/VirtIO.iso ]; then
+        downloaded_virtio_iso=1
+    fi
+
+    echo "*** Current state summary ***"
+    if [ "$installer_present" -eq 1 ]; then
+        echo "- Windows installer files already present in /mnt"
+    else
+        echo "- Windows installer files are missing from /mnt"
+    fi
+    if [ "$virtio_present" -eq 1 ]; then
+        echo "- VirtIO drivers already present in /mnt/sources/virtio"
+    else
+        echo "- VirtIO drivers are missing from /mnt/sources/virtio"
+    fi
+    if [ "$downloaded_windows_iso" -eq 1 ]; then
+        echo "- Windows.iso is already downloaded"
+    else
+        echo "- Windows.iso is not downloaded"
+    fi
+    if [ "$downloaded_virtio_iso" -eq 1 ]; then
+        echo "- VirtIO.iso is already downloaded"
+    else
+        echo "- VirtIO.iso is not downloaded"
+    fi
+    echo "*** End of state summary ***"
+}
+
 setup_download_environment() {
+    print_current_state
     if find_existing_downloads; then
         echo "Existing downloaded ISOs detected. Skipping URL prompts."
         WINDOWS_ISO_URL=""
@@ -443,14 +493,17 @@ patch_boot_wim() {
     echo "Inspecting boot.wim images..."
     wimlib-imagex info /mnt/sources/boot.wim > /tmp/bootwim_info.txt
     auto_image_index=$(awk '
-        /Index:/ { idx=$2 }
+        BEGIN { first_idx=""; fallback_idx=""; found=0 }
+        /Index:/ { idx=$2; if (first_idx == "") first_idx = idx }
         /Name:/ {
-            if ($0 ~ /Windows Setup/ || $0 ~ /Microsoft Windows Setup/ || $0 ~ /Setup \(amd64\)/) {
+            name = substr($0, index($0, $2))
+            lname = tolower(name)
+            if (lname ~ /windows setup/ || lname ~ /microsoft windows setup/ || lname ~ /setup \(amd64\)/) {
                 print idx
                 found=1
                 exit
             }
-            if ($0 ~ /Windows PE/ && fallback_idx == "") {
+            if (lname ~ /windows pe/ && fallback_idx == "") {
                 fallback_idx = idx
             }
         }
@@ -458,8 +511,8 @@ patch_boot_wim() {
             if (found) exit
             if (fallback_idx != "") {
                 print fallback_idx
-            } else if (idx != "") {
-                print idx
+            } else if (first_idx != "") {
+                print first_idx
             }
         }
     ' /tmp/bootwim_info.txt)
@@ -493,8 +546,8 @@ set default=0
 set timeout=2
 menuentry "windows installer" {
     insmod ntfs
-    set root=(hd0,1)
-    ntldr /bootmgr || chainloader +1
+    search --no-floppy --set=root --file=/bootmgr
+    ntldr /bootmgr
     boot
 }
 EOF
