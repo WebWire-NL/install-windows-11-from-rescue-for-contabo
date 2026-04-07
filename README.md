@@ -7,7 +7,8 @@ Automated script and instructions to install Windows 11 on a Contabo VPS from th
 - Fully automated disk partitioning and formatting
 - Downloads and prepares the official Windows 11 evaluation ISO
 - Integrates VirtIO drivers for disk and network support
-- Adds registry and batch files to bypass Windows 11 hardware checks
+- Adds registry and batch files to bypass Windows 11 hardware checks (TPM, RAM, Secure Boot)
+- Can be used with any QEMU-based rescue system that supports our target rescue-spec setup, including pulling the ISO directly if needed
 
 ## Prerequisites
 - Contabo VPS (any plan)
@@ -28,8 +29,9 @@ Automated script and instructions to install Windows 11 on a Contabo VPS from th
    ```
 
 ### 3. Download and Run the Script
-1. Install git if needed:
+1. Update package metadata and install git if needed:
    ```
+   apt update -y
    apt install git -y
    ```
 2. Clone this repository:
