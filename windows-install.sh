@@ -364,6 +364,7 @@ auto_image_index=$(awk '
     /Name:/ {
         if ($0 ~ /Windows Setup/ || $0 ~ /Microsoft Windows Setup/ || $0 ~ /Setup \(amd64\)/) {
             print idx
+            found=1
             exit
         }
         if ($0 ~ /Windows PE/ && fallback_idx == "") {
@@ -371,10 +372,11 @@ auto_image_index=$(awk '
         }
     }
     END {
-        if (idx != "" && fallback_idx == "") {
-            print idx
-        } else if (fallback_idx != "") {
+        if (found) exit
+        if (fallback_idx != "") {
             print fallback_idx
+        } else if (idx != "") {
+            print idx
         }
     }
 ' /tmp/bootwim_info.txt)
