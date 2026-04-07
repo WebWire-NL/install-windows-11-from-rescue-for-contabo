@@ -489,6 +489,8 @@ install_grub_if_needed() {
         grub-install --boot-directory=/mnt/boot --force /dev/sda
     fi
     cat > /mnt/boot/grub/grub.cfg <<'EOF'
+set default=0
+set timeout=2
 menuentry "windows installer" {
     insmod ntfs
     set root=(hd0,1)
