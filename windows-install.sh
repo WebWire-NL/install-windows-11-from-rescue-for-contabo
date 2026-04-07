@@ -70,7 +70,7 @@ download_file() {
 }
 
 ensure_toolchain() {
-    local required=(parted mkfs.ntfs mkfs.ext4 mount rsync wimlib-imagex grub-install curl grep awk pgrep xargs dpkg-deb modprobe partprobe blockdev partx kpartx)
+    local required=(parted mkfs.ntfs mkfs.ext4 mount rsync wimlib-imagex grub-install curl grep awk pgrep xargs dpkg-deb modprobe partprobe blockdev partx)
     for cmd in "${required[@]}"; do
         if ! command_exists "$cmd"; then
             echo "ERROR: required command '$cmd' is missing."
