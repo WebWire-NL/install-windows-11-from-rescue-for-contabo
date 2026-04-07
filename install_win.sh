@@ -26,8 +26,8 @@ trap handle_error ERR
 # Function to clean up temporary files
 cleanup() {
     echo "Cleaning up..."
-    umount /mnt/zram 2>/dev/null || true
-    rm -rf /mnt/zram 2>/dev/null || true
+    umount /mnt/zram* 2>/dev/null || true
+    rm -rf /mnt/zram* 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -100,63 +100,96 @@ fi
 show_progress "Configuring zram if sufficient memory is available"
 if [ ! -f /var/log/zram_configured ]; then
     configure_zram_for_iso() {
-        local total_iso_size_bytes=$1
-        local zram_device="/dev/zram0"
+        local iso_size_bytes=$1
+        local zram_device=$2
 
         # Get total free memory in bytes
         local free_mem_bytes=$(grep MemAvailable /proc/meminfo | awk '{print $2 * 1024}')
 
-        if (( free_mem_bytes > total_iso_size_bytes )); then
+        if (( free_mem_bytes > iso_size_bytes )); then
             echo "Sufficient memory available for zram. Setting up zram..."
 
             # Load zram module and configure
             modprobe zram
-            echo lz4 > /sys/block/zram0/comp_algorithm
-            echo $((total_iso_size_bytes / 1024 / 1024))M > /sys/block/zram0/disksize
-            mke2fs -q -t ext4 $zram_device
-            mkdir -p /mnt/zram
-            mount $zram_device /mnt/zram
+            echo lz4 > /sys/block/$zram_device/comp_algorithm
+            echo $((iso_size_bytes / 1024 / 1024))M > /sys/block/$zram_device/disksize
+            mke2fs -q -t ext4 /dev/$zram_device
+            mkdir -p /mnt/zram_$zram_device
+            mount /dev/$zram_device /mnt/zram_$zram_device
 
-            echo "zram configured and mounted at /mnt/zram."
-            echo "zram" > /var/log/zram_configured
+            # Verify zram device creation and mounting
+            if mountpoint -q /mnt/zram_$zram_device; then
+                echo "zram device $zram_device successfully created and mounted at /mnt/zram_$zram_device."
+            else
+                echo "ERROR: Failed to mount zram device $zram_device. Exiting."
+                exit 1
+            fi
+
             return 0
         else
             echo "Not enough free memory for zram. Falling back to disk storage."
-            echo "disk" > /var/log/zram_configured
             return 1
         fi
     }
 
-    configure_zram_for_iso $TOTAL_ISO_SIZE_BYTES
+    # Configure zram for Windows ISO
+    if configure_zram_for_iso $WINDOWS_ISO_SIZE_BYTES zram0; then
+        WINDOWS_ISO_PATH="/mnt/zram_zram0/Windows.iso"
+    else
+        WINDOWS_ISO_PATH="/root/windisk/Windows.iso"
+    fi
+
+    # Configure zram for VirtIO ISO
+    if configure_zram_for_iso $VIRTIO_ISO_SIZE_BYTES zram1; then
+        VIRTIO_ISO_PATH="/mnt/zram_zram1/VirtIO.iso"
+    else
+        VIRTIO_ISO_PATH="/root/windisk/VirtIO.iso"
+    fi
+
+    echo "zram" > /var/log/zram_configured
 else
     echo "zram already configured. Skipping."
-fi
-
-if [ "$(cat /var/log/zram_configured)" == "zram" ]; then
-    ISO_DOWNLOAD_PATH="/mnt/zram"
-else
-    ISO_DOWNLOAD_PATH="/root/windisk"
+    WINDOWS_ISO_PATH="/mnt/zram_zram0/Windows.iso"
+    VIRTIO_ISO_PATH="/mnt/zram_zram1/VirtIO.iso"
 fi
 
 # Step 5: Download the ISOs
 show_progress "Downloading the ISOs using aria2"
-if [ ! -f "$ISO_DOWNLOAD_PATH/Windows.iso" ]; then
-    aria2c --continue=true -x 16 -s 16 -o "$ISO_DOWNLOAD_PATH/Windows.iso" "$WINDOWS_ISO_URL"
+if [ ! -f "$WINDOWS_ISO_PATH" ]; then
+    aria2c --continue=true -x 16 -s 16 -o "$WINDOWS_ISO_PATH" "$WINDOWS_ISO_URL"
 else
     echo "Windows ISO already downloaded. Skipping."
 fi
 
-if [ ! -f "$ISO_DOWNLOAD_PATH/VirtIO.iso" ]; then
-    aria2c --continue=true -x 16 -s 16 -o "$ISO_DOWNLOAD_PATH/VirtIO.iso" "$VIRTIO_ISO_URL"
+if [ ! -f "$VIRTIO_ISO_PATH" ]; then
+    aria2c --continue=true -x 16 -s 16 -o "$VIRTIO_ISO_PATH" "$VIRTIO_ISO_URL"
 else
     echo "VirtIO ISO already downloaded. Skipping."
 fi
 
+# Step 6: Verify downloaded ISOs by file size
+show_progress "Verifying downloaded ISOs by file size"
+verify_file_size() {
+    local file_path=$1
+    local expected_size=$2
+
+    actual_size=$(stat --format=%s "$file_path")
+    if [[ "$actual_size" -eq "$expected_size" ]]; then
+        echo "Verification successful for $file_path. File size matches."
+    else
+        echo "ERROR: Verification failed for $file_path. Expected size: $expected_size, Actual size: $actual_size."
+        exit 1
+    fi
+}
+
+verify_file_size "$WINDOWS_ISO_PATH" "$WINDOWS_ISO_SIZE_BYTES"
+verify_file_size "$VIRTIO_ISO_PATH" "$VIRTIO_ISO_SIZE_BYTES"
+
 # Final Summary
 show_progress "Finalizing installation"
 echo "Installation script completed successfully!"
-echo "Windows ISO downloaded to: $ISO_DOWNLOAD_PATH/Windows.iso"
-echo "VirtIO ISO downloaded to: $ISO_DOWNLOAD_PATH/VirtIO.iso"
+echo "Windows ISO downloaded to: $WINDOWS_ISO_PATH"
+echo "VirtIO ISO downloaded to: $VIRTIO_ISO_PATH"
 
 # Dry-run mode (optional)
 if [[ "${DRY_RUN:-false}" == "true" ]]; then
