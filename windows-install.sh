@@ -132,6 +132,7 @@ self_update_script "$@"
 
 DEFAULT_WINDOWS_ISO_URL="https://bit.ly/3UGzNcB"
 DEFAULT_VIRTIO_ISO_URL="https://bit.ly/4d1g7Ht"
+GRUB_INSTALL_TARGET="i386-pc"
 
 prompt_url() {
     local default="$1"
@@ -881,6 +882,24 @@ verify_grub_entry() {
     echo "GRUB boot entry validation passed."
 }
 
+verify_grub_installation() {
+    local grub_dir="/mnt/boot/grub"
+    local core_img="${grub_dir}/i386-pc/core.img"
+
+    if [ ! -d "$grub_dir" ]; then
+        echo "ERROR: GRUB directory $grub_dir does not exist"
+        exit 1
+    fi
+
+    if [ ! -f "$core_img" ]; then
+        echo "ERROR: GRUB core image missing: $core_img"
+        echo "       grub-install may have failed to install the BIOS core files."
+        exit 1
+    fi
+
+    echo "GRUB installation artifacts verified: $core_img"
+}
+
 run_preflight_checks() {
     echo "*** Step: preflight check-only validation ***"
     verify_vps_compatibility
@@ -965,14 +984,17 @@ install_grub_if_needed() {
     echo "Installing or updating GRUB on /dev/sda..."
     mkdir -p /mnt/boot/grub
 
+    local grub_args=(--target="${GRUB_INSTALL_TARGET}" --boot-directory=/mnt/boot)
+
     if gpt_needs_blocklists; then
         echo "GPT without BIOS boot partition detected. Installing GRUB with --force blocklists."
-        grub-install --root-directory=/mnt --force /dev/sda
-    elif ! grub-install --root-directory=/mnt /dev/sda; then
+        grub-install "${grub_args[@]}" --force /dev/sda
+    elif ! grub-install "${grub_args[@]}" /dev/sda; then
         echo "grub-install failed. Retrying with --force to allow blocklists on GPT."
-        grub-install --root-directory=/mnt --force /dev/sda
+        grub-install "${grub_args[@]}" --force /dev/sda
     fi
 
+    verify_grub_installation
     write_grub_config
     verify_grub_entry
     checkpoint_set "grub_installed"
