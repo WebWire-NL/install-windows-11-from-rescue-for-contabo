@@ -6,6 +6,17 @@ set -euo pipefail
 
 SELF_UPDATE_URL="https://raw.githubusercontent.com/WebWire-NL/install-windows-11-from-rescue-for-contabo/master/windows-install.sh"
 
+STATE_DIR="/root/.wininstall-state"
+mkdir -p "$STATE_DIR"
+
+checkpoint_done() {
+    [ -f "$STATE_DIR/$1" ]
+}
+
+checkpoint_set() {
+    touch "$STATE_DIR/$1"
+}
+
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -25,6 +36,8 @@ package_for_command() {
         dpkg-deb) echo dpkg ;;
         modprobe) echo kmod ;;
         partprobe|parted) echo parted ;;
+        wimlib-imagex) echo wimtools ;;
+        aria2c) echo aria2 ;;
         *) echo "" ;;
     esac
 }
@@ -38,7 +51,7 @@ install_missing_dependencies() {
     for cmd in "$@"; do
         local pkg
         pkg=$(package_for_command "$cmd")
-        if [ -n "$pkg" ] && ! printf '%s\n' "${missing[@]}" | grep -xq "$pkg"; then
+        if [ -n "$pkg" ] && ! printf '%s\n' "${missing[@]:-}" | grep -xq "$pkg"; then
             missing+=("$pkg")
         fi
     done
@@ -167,7 +180,7 @@ download_file() {
 }
 
 ensure_toolchain() {
-    local required=(parted mkfs.ntfs mkfs.ext4 mount rsync grub-install curl grep awk pgrep xargs dpkg-deb modprobe partprobe blockdev partx)
+    local required=(parted mkfs.ntfs mkfs.ext4 mount rsync grub-install curl grep awk pgrep xargs dpkg-deb modprobe partprobe blockdev partx wimlib-imagex aria2c)
     local missing=()
 
     for cmd in "${required[@]}"; do
@@ -245,6 +258,7 @@ setup_partitions_and_mounts() {
     if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
         if has_bios_boot_partition; then
             echo "Existing Windows installer files detected on /mnt. Skipping partition recreation."
+            checkpoint_set "partitions"
             return
         fi
         if parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]' | grep -q '^gpt$'; then
@@ -254,10 +268,12 @@ setup_partitions_and_mounts() {
                 echo "WARNING: /dev/sda is GPT without a BIOS boot partition."
                 echo "This disk layout is unreliable for BIOS GRUB install, but the script will continue using existing installer files."
                 echo "If you prefer a cleaner MBR layout, rerun with --recreate-disk."
+                checkpoint_set "partitions"
                 return
             fi
         else
             echo "Existing Windows installer files detected on /mnt. Skipping partition recreation."
+            checkpoint_set "partitions"
             return
         fi
     fi
@@ -302,6 +318,8 @@ setup_partitions_and_mounts() {
 
     mount /dev/sda1 /mnt
     mount /dev/sda2 /root/windisk
+
+    checkpoint_set "partitions"
 }
 
 find_existing_downloads() {
@@ -422,7 +440,7 @@ setup_download_environment() {
         fi
     fi
 
-    if [ -z "$WINDOWS_ISO_SIZE" ] || [ -z "$VIRTIO_ISO_SIZE" ]; then
+    if [ -z "${WINDOWS_ISO_SIZE:-}" ] || [ -z "${VIRTIO_ISO_SIZE:-}" ]; then
         echo "ERROR: Unable to determine ISO sizes from HTTP headers."
         exit 1
     fi
@@ -465,7 +483,7 @@ setup_download_environment() {
             echo 1 > /sys/block/zram0/reset 2>/dev/null || true
         fi
         modprobe zram >/dev/null 2>&1 || true
-        echo lz4 > /sys/block/zram0/comp_algorithm
+        echo lz4 > /sys/block/zram0/comp_algorithm || true
         echo "${TOTAL_ISO_SIZE_MB}M" > /sys/block/zram0/disksize
         zram_disksize=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)
         if [ "$zram_disksize" -eq 0 ]; then
@@ -482,6 +500,7 @@ setup_download_environment() {
         echo "WARNING: Insufficient RAM for zram; using disk fallback."
         USE_ZRAM=0
     fi
+
     if [ "$USE_ZRAM" -eq 1 ]; then
         mkdir -p /mnt/zram0/windisk
         WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
@@ -519,12 +538,16 @@ download_if_needed() {
     local path="$2"
     local expected="$3"
 
-    if verify_file_size "$path" "$expected"; then
+    if [ "${expected:-0}" -gt 0 ] && verify_file_size "$path" "$expected"; then
         echo "$path already exists and matches expected size. Skipping download."
         return
     fi
 
     if [ -z "${url:-}" ]; then
+        if [ -f "$path" ]; then
+            echo "No expected size but file $path exists. Using existing file."
+            return
+        fi
         echo "ERROR: No URL provided for $path and the file is missing or incomplete."
         exit 1
     fi
@@ -532,7 +555,7 @@ download_if_needed() {
     echo "Downloading $path..."
     download_file "$url" "$path"
 
-    if ! verify_file_size "$path" "$expected"; then
+    if [ "${expected:-0}" -gt 0 ] && ! verify_file_size "$path" "$expected"; then
         echo "ERROR: Downloaded file size does not match expected size for $path"
         exit 1
     fi
@@ -541,35 +564,43 @@ download_if_needed() {
 copy_windows_media() {
     if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
         echo "Windows installer files already present on /mnt. Skipping Windows ISO extraction."
+        checkpoint_set "windows_extracted"
         return
     fi
     echo "Extracting Windows ISO to /mnt..."
     WINFILE_MOUNT=$(mktemp -d)
     mount -o loop "$WINDOWS_ISO" "$WINFILE_MOUNT"
-    rsync -avz --progress "$WINFILE_MOUNT"/* /mnt/
+    rsync -a --info=progress2 "$WINFILE_MOUNT"/ /mnt/
     umount "$WINFILE_MOUNT"
     rmdir "$WINFILE_MOUNT"
+
+    checkpoint_set "windows_extracted"
 }
 
 copy_virtio_media() {
     if [ -d /mnt/sources/virtio ] && [ -f /mnt/sources/virtio/NetKVM/2k3/amd64/netkvm.sys ]; then
         echo "VirtIO drivers already copied to /mnt/sources/virtio. Skipping VirtIO ISO extraction."
+        checkpoint_set "virtio_extracted"
         return
     fi
     echo "Extracting VirtIO ISO to /mnt/sources/virtio..."
     ISO_MOUNT_DIR=$(mktemp -d)
     mount -o loop "$VIRTIO_ISO" "$ISO_MOUNT_DIR"
     mkdir -p /mnt/sources/virtio
-    rsync -avz --progress "$ISO_MOUNT_DIR"/ /mnt/sources/virtio/
+    rsync -a --info=progress2 "$ISO_MOUNT_DIR"/ /mnt/sources/virtio/
     umount "$ISO_MOUNT_DIR"
     rmdir "$ISO_MOUNT_DIR"
+
+    checkpoint_set "virtio_extracted"
 }
 
 write_bypass_files() {
     if [ -f /mnt/sources/bypass.reg ] && [ -f /mnt/sources/bypass.cmd ]; then
         echo "Bypass files already exist. Skipping creation."
+        checkpoint_set "bypass_files"
         return
     fi
+    mkdir -p /mnt/sources
     cat <<'EOF' > /mnt/sources/bypass.reg
 Windows Registry Editor Version 5.00
 
@@ -585,11 +616,18 @@ EOF
 @echo off
 regedit /s "%~dp0bypass.reg"
 EOF
+
+    checkpoint_set "bypass_files"
 }
 
 patch_boot_wim() {
+    if checkpoint_done "boot_wim_patched"; then
+        echo "boot.wim already patched (checkpoint)."
+        return
+    fi
     if [ -f /mnt/sources/boot.wim.virtio_patched ]; then
         echo "boot.wim already patched with VirtIO drivers. Skipping WIM update."
+        checkpoint_set "boot_wim_patched"
         return
     fi
     if [ ! -f /mnt/sources/boot.wim ]; then
@@ -598,7 +636,7 @@ patch_boot_wim() {
     fi
     if ! command_exists wimlib-imagex; then
         echo "WARNING: wimlib-imagex not installed. Skipping boot.wim patch."
-        echo "Warning: VirtIO drivers will still be copied to /mnt/sources/virtio, but boot.wim injection will not be applied."
+        echo "VirtIO drivers will still be copied to /mnt/sources/virtio, but boot.wim injection will not be applied."
         return
     fi
     echo "Inspecting boot.wim images..."
@@ -639,6 +677,8 @@ patch_boot_wim() {
     wimlib-imagex update /mnt/sources/boot.wim "$auto_image_index" < /tmp/wimcmd.txt
     rm -f /tmp/wimcmd.txt
     touch /mnt/sources/boot.wim.virtio_patched
+
+    checkpoint_set "boot_wim_patched"
 }
 
 gpt_needs_blocklists() {
@@ -657,6 +697,11 @@ gpt_needs_blocklists() {
 }
 
 install_grub_if_needed() {
+    if checkpoint_done "grub_installed"; then
+        echo "GRUB already installed (checkpoint)."
+        return
+    fi
+
     echo "Installing or updating GRUB on /dev/sda..."
     mkdir -p /mnt/boot/grub
 
@@ -668,39 +713,62 @@ install_grub_if_needed() {
         grub-install --boot-directory=/mnt/boot --force /dev/sda
     fi
 
+    # Robust BIOS-style menuentry: assume Windows installer is on /dev/sda1
     cat > /mnt/boot/grub/grub.cfg <<'EOF'
 set default=0
 set timeout=1
 set timeout_style=hidden
 set menu_color_normal=white/black
 set menu_color_highlight=black/light-gray
-menuentry "windows installer" {
+
+menuentry "Windows installer (bootmgr on sda1)" {
+    insmod part_msdos
     insmod ntfs
-    search --no-floppy --set=root --file=/bootmgr
-    ntldr /bootmgr || chainloader +1
-    boot
+    set root=(hd0,msdos1)
+    chainloader /bootmgr
 }
 EOF
+
+    checkpoint_set "grub_installed"
 }
 
 main() {
+    echo "*** Step: ensure_toolchain ***"
     ensure_toolchain
+
+    echo "*** Step: partitions & mounts ***"
     setup_partitions_and_mounts
+
+    echo "*** Step: download environment ***"
     setup_download_environment
+
+    echo "*** Step: Windows ISO download ***"
     if [ -n "${WINDOWS_ISO_URL:-}" ] || [ -n "${WINDOWS_ISO:-}" ]; then
-        download_if_needed "$WINDOWS_ISO_URL" "$WINDOWS_ISO" "$WINDOWS_ISO_SIZE"
+        download_if_needed "${WINDOWS_ISO_URL:-}" "${WINDOWS_ISO:-/root/windisk/Windows.iso}" "${WINDOWS_ISO_SIZE:-0}"
     else
         echo "Skipping Windows ISO download because installer media already exists."
     fi
+
+    echo "*** Step: VirtIO ISO download ***"
     if [ -n "${VIRTIO_ISO_URL:-}" ] || [ -n "${VIRTIO_ISO:-}" ]; then
-        download_if_needed "$VIRTIO_ISO_URL" "$VIRTIO_ISO" "$VIRTIO_ISO_SIZE"
+        download_if_needed "${VIRTIO_ISO_URL:-}" "${VIRTIO_ISO:-/root/windisk/VirtIO.iso}" "${VIRTIO_ISO_SIZE:-0}"
     else
         echo "Skipping VirtIO ISO download because driver media already exists."
     fi
+
+    echo "*** Step: copy Windows media ***"
     copy_windows_media
+
+    echo "*** Step: copy VirtIO media ***"
     copy_virtio_media
+
+    echo "*** Step: write bypass files ***"
     write_bypass_files
+
+    echo "*** Step: patch boot.wim ***"
     patch_boot_wim
+
+    echo "*** Step: install GRUB ***"
     install_grub_if_needed
 
     echo "*** Final checks ***"
