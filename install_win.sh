@@ -6,7 +6,7 @@ exec > >(tee -i /var/log/install_script.log)
 exec 2>&1
 
 # Define total steps
-TOTAL_STEPS=6
+TOTAL_STEPS=7
 CURRENT_STEP=0
 
 # Function to display progress
@@ -31,35 +31,37 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Step 1: Update package lists
+# Step 1: Ensure required packages are installed
+show_progress "Ensuring required packages are installed"
+required_packages=(
+    zram-tools
+    aria2
+    curl
+    wget
+    git
+)
+
+missing_packages=()
+for package in "${required_packages[@]}"; do
+    if ! dpkg -l | grep -q "^ii  $package"; then
+        missing_packages+=("$package")
+    fi
+done
+
+if [ ${#missing_packages[@]} -gt 0 ]; then
+    echo "Installing missing packages: ${missing_packages[*]}"
+    apt update -y
+    apt install -y "${missing_packages[@]}"
+else
+    echo "All required packages are already installed."
+fi
+
+# Step 2: Update package lists
 show_progress "Updating package lists"
 if [ ! -f /var/log/apt_update_done ]; then
     apt update -y && touch /var/log/apt_update_done
 else
     echo "Package lists already updated. Skipping."
-fi
-
-# Step 2: Ensure required tools are installed
-show_progress "Ensuring required tools are installed"
-required_tools=(
-    zram-tools
-    aria2
-    curl
-    wget
-)
-
-missing_tools=()
-for tool in "${required_tools[@]}"; do
-    if ! dpkg -l | grep -q "^ii  $tool"; then
-        missing_tools+=("$tool")
-    fi
-done
-
-if [ ${#missing_tools[@]} -gt 0 ]; then
-    echo "Installing missing tools: ${missing_tools[*]}"
-    apt install -y "${missing_tools[@]}"
-else
-    echo "All required tools are already installed."
 fi
 
 # Step 3: Prompt for ISO URLs and fetch their sizes
@@ -185,7 +187,7 @@ verify_file_size() {
 verify_file_size "$WINDOWS_ISO_PATH" "$WINDOWS_ISO_SIZE_BYTES"
 verify_file_size "$VIRTIO_ISO_PATH" "$VIRTIO_ISO_SIZE_BYTES"
 
-# Final Summary
+# Final Step: Summary
 show_progress "Finalizing installation"
 echo "Installation script completed successfully!"
 echo "Windows ISO downloaded to: $WINDOWS_ISO_PATH"
