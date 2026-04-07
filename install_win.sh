@@ -160,6 +160,34 @@ echo "Check if the ISO of Windows finish ***"
 ###############################################################################
 echo "*** Virtio drivers ISO ***"
 
+# Define the path to the VirtIO ISO extraction root
+virtio_root="/mnt/virtio"
+
+# Ensure the directory exists
+if [ ! -d "$virtio_root" ]; then
+    echo "VirtIO root directory does not exist: $virtio_root"
+    exit 1
+fi
+
+# Create the bypass.bat file
+bypass_file="$virtio_root/bypass.bat"
+echo "Creating bypass.bat at $bypass_file..."
+cat <<EOF > "$bypass_file"
+REG ADD "HKEY_LOCAL_MACHINE\\OFFLINE_SYSTEM\\Setup\\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f
+REG ADD "HKEY_LOCAL_MACHINE\\OFFLINE_SYSTEM\\Setup\\LabConfig" /v BypassSecureBootCheck /t REG_DWORD /d 1 /f
+REG ADD "HKEY_LOCAL_MACHINE\\OFFLINE_SYSTEM\\Setup\\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f
+REG ADD "HKEY_LOCAL_MACHINE\\OFFLINE_SYSTEM\\Setup\\LabConfig" /v BypassStorageCheck /t REG_DWORD /d 1 /f
+REG ADD "HKEY_LOCAL_MACHINE\\OFFLINE_SYSTEM\\Setup\\LabConfig" /v BypassCPUCheck /t REG_DWORD /d 1 /f
+EOF
+
+# Verify the file was created
+if [ -f "$bypass_file" ]; then
+    echo "bypass.bat created successfully at $bypass_file."
+else
+    echo "Failed to create bypass.bat."
+    exit 1
+fi
+
 # Ensure winfile exists for reuse
 mkdir -p /root/windisk/winfile
 cd /root/windisk
