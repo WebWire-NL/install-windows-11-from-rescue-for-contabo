@@ -197,6 +197,21 @@ cleanup_partition_state() {
     sleep 2
 }
 
+has_bios_boot_partition() {
+    if ! command_exists parted; then
+        return 1
+    fi
+    local label
+    label=$(parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')
+    if [ "$label" != "gpt" ]; then
+        return 1
+    fi
+    if parted /dev/sda --script print | grep -q "bios_grub"; then
+        return 0
+    fi
+    return 1
+}
+
 setup_partitions_and_mounts() {
     mkdir -p /mnt /root/windisk
 
@@ -212,6 +227,16 @@ setup_partitions_and_mounts() {
     fi
 
     if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
+        if has_bios_boot_partition; then
+            echo "Existing Windows installer files detected on /mnt. Skipping partition recreation."
+            return
+        fi
+        if parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]' | grep -q '^gpt$'; then
+            echo "ERROR: /dev/sda is GPT without a BIOS boot partition."
+            echo "This disk layout is unreliable for BIOS GRUB install."
+            echo "You may need to recreate the disk with MBR, add a BIOS boot partition, or boot in UEFI mode."
+            exit 1
+        fi
         echo "Existing Windows installer files detected on /mnt. Skipping partition recreation."
         return
     fi
