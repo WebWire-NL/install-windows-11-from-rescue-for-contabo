@@ -696,9 +696,27 @@ gpt_needs_blocklists() {
     return 0
 }
 
+write_grub_config() {
+    mkdir -p /mnt/boot/grub
+    cat > /mnt/boot/grub/grub.cfg <<'EOF'
+set default=0
+set timeout=1
+set timeout_style=hidden
+set menu_color_normal=white/black
+set menu_color_highlight=black/light-gray
+
+menuentry "Windows installer" {
+    insmod ntfs
+    search --no-floppy --set=root --file /bootmgr
+    chainloader /bootmgr
+}
+EOF
+}
+
 install_grub_if_needed() {
     if checkpoint_done "grub_installed"; then
-        echo "GRUB already installed (checkpoint)."
+        echo "GRUB already installed (checkpoint). Updating GRUB config."
+        write_grub_config
         return
     fi
 
@@ -713,21 +731,7 @@ install_grub_if_needed() {
         grub-install --boot-directory=/mnt/boot --force /dev/sda
     fi
 
-    # Robust BIOS-style menuentry: search for the installer partition by /bootmgr
-    cat > /mnt/boot/grub/grub.cfg <<'EOF'
-set default=0
-set timeout=1
-set timeout_style=hidden
-set menu_color_normal=white/black
-set menu_color_highlight=black/light-gray
-
-menuentry "Windows installer" {
-    insmod ntfs
-    search --no-floppy --set=root --file /bootmgr
-    chainloader /bootmgr
-}
-EOF
-
+    write_grub_config
     checkpoint_set "grub_installed"
 }
 
