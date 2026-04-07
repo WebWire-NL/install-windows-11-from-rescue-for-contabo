@@ -596,11 +596,7 @@ patch_boot_wim() {
 }
 
 install_grub_if_needed() {
-    if [ -f /mnt/boot/grub/grub.cfg ] && grep -q "ntldr /bootmgr" /mnt/boot/grub/grub.cfg 2>/dev/null; then
-        echo "GRUB boot entry already installed. Skipping grub-install."
-        return
-    fi
-    echo "Installing GRUB to /dev/sda..."
+    echo "Installing or updating GRUB on /dev/sda..."
     mkdir -p /mnt/boot/grub
     if ! grub-install --boot-directory=/mnt/boot /dev/sda; then
         echo "grub-install failed. Retrying with --force to allow blocklists on GPT."
@@ -612,7 +608,7 @@ set timeout=2
 menuentry "windows installer" {
     insmod ntfs
     search --no-floppy --set=root --file=/bootmgr
-    ntldr /bootmgr
+    ntldr /bootmgr || chainloader +1
     boot
 }
 EOF
