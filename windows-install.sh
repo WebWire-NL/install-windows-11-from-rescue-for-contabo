@@ -319,6 +319,11 @@ setup_partitions_and_mounts() {
     mount /dev/sda1 /mnt
     mount /dev/sda2 /root/windisk
 
+    if ! lsblk /dev/sda1 >/dev/null 2>&1 || ! lsblk /dev/sda2 >/dev/null 2>&1; then
+        echo "ERROR: partitions were not created or formatted successfully."
+        exit 1
+    fi
+
     checkpoint_set "partitions"
 }
 
@@ -698,6 +703,11 @@ gpt_needs_blocklists() {
 
 write_grub_config() {
     mkdir -p /mnt/boot/grub
+
+    if [ ! -f /mnt/bootmgr ]; then
+        echo "WARNING: /mnt/bootmgr not found. GRUB boot entry may fail."
+    fi
+
     cat > /mnt/boot/grub/grub.cfg <<'EOF'
 set default=0
 set timeout=1
@@ -705,10 +715,11 @@ set timeout_style=hidden
 set menu_color_normal=white/black
 set menu_color_highlight=black/light-gray
 
-menuentry "Windows installer" {
+menuentry "windows installer" {
     insmod ntfs
-    search --no-floppy --set=root --file /bootmgr
-    chainloader /bootmgr
+    search --no-floppy --set=root --file=/bootmgr
+    ntldr /bootmgr
+    boot
 }
 EOF
 }
