@@ -56,45 +56,73 @@ if mount | grep -q "/mnt/zram0"; then
     echo "zram unloaded."
 fi
 
-# Recreate zram if sufficient RAM is available
-AVAILABLE_RAM=$(free -m | awk '/^Mem:/{print $7}')
-if [ "$AVAILABLE_RAM" -gt 1024 ]; then
-    echo "Creating zram with 1GB size..."
+# Determine the sizes of both ISOs before creating zram
+WINDOWS_ISO_URL="$windows_url"
+VIRTIO_ISO_URL="$DEFAULT_VIRTIO_ISO_URL"
+
+WINDOWS_ISO_SIZE=$(curl -sI "$WINDOWS_ISO_URL" | grep -i Content-Length | awk '{print $2}' | tr -d '\r')
+VIRTIO_ISO_SIZE=$(curl -sI "$VIRTIO_ISO_URL" | grep -i Content-Length | awk '{print $2}' | tr -d '\r')
+
+if [ -z "$WINDOWS_ISO_SIZE" ] || [ -z "$VIRTIO_ISO_SIZE" ]; then
+    echo "ERROR: Unable to determine ISO sizes. Exiting."
+    exit 1
+fi
+
+TOTAL_ISO_SIZE=$((WINDOWS_ISO_SIZE + VIRTIO_ISO_SIZE))
+TOTAL_ISO_SIZE_GB=$((TOTAL_ISO_SIZE / 1024 / 1024 / 1024 + 1))
+
+# Remove existing zram if present
+if mount | grep -q "/mnt/zram0"; then
+    echo "Unmounting existing zram..."
+    umount /mnt/zram0 || true
+    swapoff /dev/zram0 || true
+    echo 1 > /sys/class/zram-control/hot_remove
+    echo "Existing zram removed."
+fi
+
+# Create a new zram with appropriate size
+ZRAM_SIZE_MB=$((TOTAL_ISO_SIZE_GB * 1024 + 512)) # Add 512 MB buffer
+AVAILABLE_RAM_MB=$(free -m | awk '/^Mem:/{print $7}')
+
+if [ "$ZRAM_SIZE_MB" -le "$AVAILABLE_RAM_MB" ]; then
+    echo "Creating zram of size ${ZRAM_SIZE_MB}MB..."
     echo lz4 > /sys/block/zram0/comp_algorithm
-    echo 1024M > /sys/block/zram0/disksize
-    mkswap /dev/zram0
-    swapon /dev/zram0
-    mkdir -p /mnt/zram0
-    mount -o rw /dev/zram0 /mnt/zram0
-    echo "zram recreated and mounted at /mnt/zram0."
+    echo "${ZRAM_SIZE_MB}M" > /sys/block/zram0/disksize
+    if mkswap /dev/zram0 && swapon /dev/zram0; then
+        mkdir -p /mnt/zram0/windisk
+        WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
+        VIRTIO_ISO="/mnt/zram0/windisk/VirtIO.iso"
+        echo "zram created and mounted at /mnt/zram0."
+    else
+        echo "ERROR: Failed to initialize zram. Falling back to local storage."
+        WINDOWS_ISO="/root/windisk/Windows.iso"
+        VIRTIO_ISO="/root/windisk/VirtIO.iso"
+    fi
 else
-    echo "Insufficient RAM to recreate zram. Skipping zram setup."
+    echo "WARNING: Insufficient RAM to create zram of size ${ZRAM_SIZE_MB}MB. Falling back to local storage."
+    WINDOWS_ISO="/root/windisk/Windows.iso"
+    VIRTIO_ISO="/root/windisk/VirtIO.iso"
 fi
 
-# Use aria2c for downloads
-if ! command -v aria2c &> /dev/null; then
-    echo "Installing aria2..."
-    apt update && apt install -y aria2
+# Log zram size for debugging
+if [ -e /sys/block/zram0/disksize ]; then
+    echo "zram size: $(cat /sys/block/zram0/disksize)"
+else
+    echo "zram not created."
 fi
 
-# Ensure ISO download uses zram if sufficient space is available
-WINDOWS_ISO="/root/windisk/Windows.iso"
-if [ $(df --output=avail /mnt/zram0 | tail -1) -gt 8000000 ]; then
-    echo "Sufficient space detected in zram. Using /mnt/zram0 for ISO download."
-    mkdir -p /mnt/zram0/windisk
-    WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
-fi
-
-# Download the ISO
-retry_download "$windows_url" "$WINDOWS_ISO"
+# Download the ISOs
+retry_download "$WINDOWS_ISO_URL" "$WINDOWS_ISO"
+retry_download "$VIRTIO_ISO_URL" "$VIRTIO_ISO"
 
 # Verify download success
-if [ ! -f "$WINDOWS_ISO" ]; then
-    echo "ERROR: Failed to download Windows ISO. Exiting."
+if [ ! -f "$WINDOWS_ISO" ] || [ ! -f "$VIRTIO_ISO" ]; then
+    echo "ERROR: Failed to download one or both ISOs. Exiting."
     exit 1
 fi
 
 echo "Windows ISO downloaded successfully to $WINDOWS_ISO."
+echo "VirtIO ISO downloaded successfully to $VIRTIO_ISO."
 
 # Default URL for VirtIO ISO
 DEFAULT_VIRTIO_ISO_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
@@ -102,10 +130,6 @@ DEFAULT_VIRTIO_ISO_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-d
 # Prompt user for URL or use default
 read -p "Enter the URL for Virtio.iso (leave blank to use default): " virtio_url
 virtio_url=${virtio_url:-$DEFAULT_VIRTIO_ISO_URL}
-
-# Download the ISO
-VIRTIO_ISO="/root/windisk/Virtio.iso"
-retry_download "$virtio_url" "$VIRTIO_ISO"
 
 # Mount and copy drivers
 mount -o loop "$VIRTIO_ISO" /root/windisk/winfile
