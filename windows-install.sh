@@ -186,7 +186,8 @@ if [ -z "$WINDOWS_ISO_SIZE" ] || [ -z "$VIRTIO_ISO_SIZE" ]; then
 fi
 
 TOTAL_ISO_SIZE=$((WINDOWS_ISO_SIZE + VIRTIO_ISO_SIZE))
-TOTAL_ISO_SIZE_MB=$((TOTAL_ISO_SIZE / 1024 / 1024 + 512))
+ZRAM_SIZE_MARGIN_MB=1024
+TOTAL_ISO_SIZE_MB=$((TOTAL_ISO_SIZE / 1024 / 1024 + ZRAM_SIZE_MARGIN_MB))
 
 if command_exists mountpoint && mountpoint -q /mnt/zram0; then
     echo "Unmounting existing zram mount..."
@@ -213,7 +214,8 @@ fi
 
 echo "Detected available RAM: ${AVAILABLE_RAM_MB}MB"
 echo "Reserving 512MB; safe RAM for zram: ${SAFE_RAM_MB}MB"
-echo "Estimated ISO download size: ${TOTAL_ISO_SIZE_MB}MB"
+echo "Estimated ISO download size: $((TOTAL_ISO_SIZE / 1024 / 1024))MB"
+echo "Allocating zram with buffer: ${TOTAL_ISO_SIZE_MB}MB"
 
 if command_exists modprobe; then
     modprobe zram >/dev/null 2>&1 || true
