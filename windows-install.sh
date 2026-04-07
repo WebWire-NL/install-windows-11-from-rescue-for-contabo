@@ -92,28 +92,40 @@ self_update_script() {
         return 0
     fi
 
-    if ! cmp -s "$0" "$tmp"; then
-        echo "A newer installer script version is available. Re-running the latest version."
-        bash "$tmp" --no-self-update "$@"
-        exit $?
+    if cmp -s "$0" "$tmp"; then
+        rm -f "$tmp"
+        return 0
     fi
 
-    rm -f "$tmp"
+    if tr -d '\r' < "$0" | cmp -s - <(tr -d '\r' < "$tmp"); then
+        rm -f "$tmp"
+        return 0
+    fi
+
+    echo "A newer installer script version is available. Re-running the latest version."
+    bash "$tmp" --no-self-update "$@"
+    exit $?
 }
 
 RECREATE_DISK=0
+CHECK_ONLY=0
 PARSED_ARGS=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --recreate-disk)
             RECREATE_DISK=1
             shift
+            ;;
+        --check-only)
+            CHECK_ONLY=1
+            shift
+            ;;
         *)
             PARSED_ARGS+=("$1")
             shift
             ;;
     esac
-done
+ done
 set -- "${PARSED_ARGS[@]}"
 
 self_update_script "$@"
@@ -229,6 +241,24 @@ ensure_toolchain() {
     fi
 }
 
+verify_toolchain() {
+    local required=(parted mkfs.ntfs mkfs.ext4 mount rsync grub-install curl grep awk pgrep xargs dpkg-deb modprobe partprobe blockdev partx wimlib-imagex aria2c)
+    local missing=()
+
+    for cmd in "${required[@]}"; do
+        if ! command_exists "$cmd"; then
+            missing+=("$cmd")
+        fi
+    done
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "WARNING: missing required commands: ${missing[*]}"
+        echo "         Run the installer normally to install missing packages, or install them manually."
+    else
+        echo "All required commands are available."
+    fi
+}
+
 cleanup_partition_state() {
     echo "Cleaning up stale /dev/sda state..."
     umount /mnt 2>/dev/null || true
@@ -259,7 +289,11 @@ get_available_ram_mb() {
 }
 
 get_available_root_space_mb() {
-    df --output=avail /root/windisk 2>/dev/null | tail -n 1 | tr -d ' '
+    if df --output=avail /root/windisk >/dev/null 2>&1; then
+        df --output=avail /root/windisk 2>/dev/null | tail -n 1 | tr -d ' '
+    else
+        echo 0
+    fi
 }
 
 get_disk_label() {
@@ -847,6 +881,49 @@ verify_grub_entry() {
     echo "GRUB boot entry validation passed."
 }
 
+run_preflight_checks() {
+    echo "*** Step: preflight check-only validation ***"
+    verify_vps_compatibility
+    verify_toolchain
+
+    mkdir -p /mnt /root/windisk
+    if mountpoint -q /mnt; then
+        echo "/mnt is mounted"
+    else
+        echo "/mnt is not mounted"
+    fi
+    if mountpoint -q /root/windisk; then
+        echo "/root/windisk is mounted"
+    else
+        echo "/root/windisk is not mounted"
+    fi
+
+    if [ -f /mnt/boot/grub/grub.cfg ]; then
+        echo "Found existing GRUB config at /mnt/boot/grub/grub.cfg"
+        verify_grub_entry
+    else
+        echo "No GRUB config found at /mnt/boot/grub/grub.cfg"
+    fi
+
+    if [ -f /mnt/bootmgr ]; then
+        echo "Found /mnt/bootmgr"
+    else
+        echo "Missing /mnt/bootmgr"
+    fi
+    if [ -f /mnt/sources/boot.wim ]; then
+        echo "Found /mnt/sources/boot.wim"
+    else
+        echo "Missing /mnt/sources/boot.wim"
+    fi
+    if [ -d /mnt/sources/virtio ]; then
+        echo "Found /mnt/sources/virtio"
+    else
+        echo "Missing /mnt/sources/virtio"
+    fi
+
+    echo "Preflight check-only validation complete."
+}
+
 write_grub_config() {
     mkdir -p /mnt/boot/grub
 
@@ -903,6 +980,11 @@ install_grub_if_needed() {
 
 main() {
     verify_vps_compatibility
+
+    if [ "$CHECK_ONLY" -eq 1 ]; then
+        run_preflight_checks
+        exit 0
+    fi
 
     echo "*** Step: ensure_toolchain ***"
     ensure_toolchain
