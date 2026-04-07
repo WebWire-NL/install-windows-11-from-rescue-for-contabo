@@ -182,7 +182,7 @@ setup_partitions_and_mounts() {
     fi
     cleanup_partition_state
 
-    parted /dev/sda --script -- mklabel gpt
+    parted /dev/sda --script -- mklabel msdos
     parted /dev/sda --script -- mkpart primary ntfs 1MB ${part_size_mb}MB
     parted /dev/sda --script -- mkpart primary ntfs ${part_size_mb}MB 100%
     partprobe /dev/sda
@@ -491,7 +491,7 @@ install_grub_if_needed() {
     cat > /mnt/boot/grub/grub.cfg <<'EOF'
 menuentry "windows installer" {
     insmod ntfs
-    search.file --no-floppy /bootmgr --set=root
+    set root=(hd0,1)
     ntldr /bootmgr || chainloader +1
     boot
 }
