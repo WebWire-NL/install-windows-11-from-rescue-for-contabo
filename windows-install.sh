@@ -91,6 +91,8 @@ for cmd in "${required_cmds[@]}"; do
     if ! command_exists "$cmd"; then
         echo "ERROR: required command '$cmd' is missing."
         echo "If the rescue environment is low on disk space, free space or provide the missing tool in the environment before rerunning the script."
+        exit 1
+    fi
 done
 
 disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
