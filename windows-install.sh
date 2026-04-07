@@ -38,6 +38,7 @@ package_for_command() {
         partprobe|parted) echo parted ;;
         wimlib-imagex) echo wimtools ;;
         aria2c) echo aria2 ;;
+        wget) echo wget ;;
         *) echo "" ;;
     esac
 }
@@ -107,7 +108,6 @@ while [ "$#" -gt 0 ]; do
         --recreate-disk)
             RECREATE_DISK=1
             shift
-            ;;
         *)
             PARSED_ARGS+=("$1")
             shift
@@ -166,16 +166,38 @@ download_file() {
             if command_exists curl; then
                 curl --http2 --compressed --retry 5 --retry-delay 10 --retry-connrefused \
                     --location --continue-at - --user-agent "$ua" --output "$output" "$url"
-            else
+            elif command_exists wget; then
                 echo "WARNING: curl not available. Falling back to wget."
                 wget --tries=0 --waitretry=5 --retry-connrefused --continue --timeout=60 \
                     --user-agent="$ua" -O "$output" "$url"
+            else
+                echo "WARNING: curl and wget not available. Installing wget."
+                install_missing_dependencies wget
+                if command_exists wget; then
+                    wget --tries=0 --waitretry=5 --retry-connrefused --continue --timeout=60 \
+                        --user-agent="$ua" -O "$output" "$url"
+                else
+                    echo "ERROR: wget installation failed. Cannot download $url"
+                    exit 1
+                fi
             fi
         fi
     else
-        echo "aria2c not available, downloading $output with wget"
-        wget --tries=5 --waitretry=5 --retry-connrefused --continue --timeout=60 \
-            --user-agent="$ua" -O "$output" "$url"
+        if command_exists wget; then
+            echo "aria2c not available, downloading $output with wget"
+            wget --tries=5 --waitretry=5 --retry-connrefused --continue --timeout=60 \
+                --user-agent="$ua" -O "$output" "$url"
+        else
+            echo "aria2c not available and wget is missing. Installing wget."
+            install_missing_dependencies wget
+            if command_exists wget; then
+                wget --tries=5 --waitretry=5 --retry-connrefused --continue --timeout=60 \
+                    --user-agent="$ua" -O "$output" "$url"
+            else
+                echo "ERROR: wget installation failed. Cannot download $url"
+                exit 1
+            fi
+        fi
     fi
 }
 
@@ -224,6 +246,85 @@ cleanup_partition_state() {
         kpartx -d /dev/sda >/dev/null 2>&1 || true
     fi
     sleep 2
+}
+
+get_available_ram_mb() {
+    if command_exists free; then
+        free -m | awk '/^Mem:/ {print $7}'
+    elif [ -r /proc/meminfo ]; then
+        awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo
+    else
+        echo 0
+    fi
+}
+
+get_available_root_space_mb() {
+    df --output=avail /root/windisk 2>/dev/null | tail -n 1 | tr -d ' '
+}
+
+get_disk_label() {
+    if ! command_exists parted; then
+        echo "unknown"
+        return
+    fi
+    parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]'
+}
+
+detect_firmware_mode() {
+    if [ -d /sys/firmware/efi ]; then
+        FIRMWARE_MODE="uefi"
+    else
+        FIRMWARE_MODE="bios"
+    fi
+}
+
+verify_vps_compatibility() {
+    echo "*** Step: compatibility check ***"
+
+    if [ ! -b /dev/sda ]; then
+        echo "ERROR: /dev/sda is not available. This VPS does not expose the primary disk as /dev/sda."
+        exit 1
+    fi
+
+    detect_firmware_mode
+    echo "Detected firmware mode: ${FIRMWARE_MODE}"
+
+    local disk_label
+    disk_label=$(get_disk_label)
+    echo "Disk partition table: ${disk_label:-unknown}"
+
+    if [ "${FIRMWARE_MODE}" = "bios" ] && [ "${disk_label}" = "gpt" ] && ! has_bios_boot_partition; then
+        echo "WARNING: BIOS mode with GPT disk and no bios_grub partition detected."
+        echo "         GRUB installation will require blocklists, which is less reliable."
+        echo "         If you want a safer setup, rerun with --recreate-disk to force MBR layout."
+    fi
+
+    if [ "${FIRMWARE_MODE}" = "uefi" ] && [ "${disk_label}" != "gpt" ]; then
+        echo "WARNING: UEFI mode detected but /dev/sda is not GPT."
+        echo "         This disk layout may be incompatible with a standard UEFI Windows install."
+    fi
+
+    local available_ram
+    available_ram=$(get_available_ram_mb)
+    echo "Available RAM: ${available_ram}MB"
+    if [ "${available_ram:-0}" -lt 2048 ]; then
+        echo "WARNING: VPS RAM is under 2GB. zram and ISO extraction may fail or be very slow."
+    fi
+
+    local root_space
+    root_space=$(get_available_root_space_mb)
+    if [ -n "${root_space}" ] && [ "${root_space}" -gt 0 ]; then
+        echo "Available space on /root/windisk: ${root_space}KB"
+    else
+        echo "WARNING: Unable to determine available space on /root/windisk."
+    fi
+
+    if [ "${disk_label}" = "unknown" ]; then
+        echo "ERROR: Unable to detect disk label type. Ensure parted is installed and /dev/sda is accessible."
+        exit 1
+    fi
+
+    echo "Compatibility check complete."
 }
 
 has_bios_boot_partition() {
@@ -701,6 +802,51 @@ gpt_needs_blocklists() {
     return 0
 }
 
+find_uefi_loader_path() {
+    if [ -f /mnt/efi/boot/bootx64.efi ]; then
+        echo "/efi/boot/bootx64.efi"
+    elif [ -f /mnt/EFI/BOOT/BOOTX64.EFI ]; then
+        echo "/EFI/BOOT/BOOTX64.EFI"
+    elif [ -f /mnt/efi/microsoft/boot/bootmgfw.efi ]; then
+        echo "/efi/microsoft/boot/bootmgfw.efi"
+    else
+        return 1
+    fi
+}
+
+verify_grub_entry() {
+    local cfg_path="/mnt/boot/grub/grub.cfg"
+    if [ ! -f "$cfg_path" ]; then
+        echo "ERROR: GRUB config not found at $cfg_path"
+        exit 1
+    fi
+
+    if ! grep -q 'menuentry "windows installer (BIOS)"' "$cfg_path"; then
+        echo "ERROR: BIOS GRUB entry is missing in $cfg_path"
+        exit 1
+    fi
+
+    if [ ! -f /mnt/bootmgr ]; then
+        echo "ERROR: /mnt/bootmgr is missing; BIOS GRUB entry cannot boot Windows installer."
+        exit 1
+    fi
+
+    if find_uefi_loader_path >/dev/null 2>&1; then
+        if ! grep -q 'menuentry "windows installer (UEFI)"' "$cfg_path"; then
+            echo "ERROR: UEFI GRUB entry is missing in $cfg_path"
+            exit 1
+        fi
+        local uefi_path
+        uefi_path=$(find_uefi_loader_path)
+        if [ ! -f "/mnt${uefi_path}" ]; then
+            echo "ERROR: UEFI loader file /mnt${uefi_path} not found"
+            exit 1
+        fi
+    fi
+
+    echo "GRUB boot entry validation passed."
+}
+
 write_grub_config() {
     mkdir -p /mnt/boot/grub
 
@@ -709,25 +855,33 @@ write_grub_config() {
     fi
 
     cat > /mnt/boot/grub/grub.cfg <<'EOF'
-set default=0
-set timeout=1
-set timeout_style=hidden
-set menu_color_normal=white/black
-set menu_color_highlight=black/light-gray
-
-menuentry "windows installer" {
+menuentry "windows installer (BIOS)" {
     insmod ntfs
     search --no-floppy --set=root --file=/bootmgr
     ntldr /bootmgr
     boot
 }
 EOF
+
+    if find_uefi_loader_path >/dev/null 2>&1; then
+        local uefi_path
+        uefi_path=$(find_uefi_loader_path)
+        cat >> /mnt/boot/grub/grub.cfg <<EOF
+menuentry "windows installer (UEFI)" {
+    insmod ntfs
+    search --no-floppy --set=root --file=${uefi_path}
+    chainloader ${uefi_path}
+    boot
+}
+EOF
+    fi
 }
 
 install_grub_if_needed() {
     if checkpoint_done "grub_installed"; then
         echo "GRUB already installed (checkpoint). Updating GRUB config."
         write_grub_config
+        verify_grub_entry
         return
     fi
 
@@ -736,17 +890,20 @@ install_grub_if_needed() {
 
     if gpt_needs_blocklists; then
         echo "GPT without BIOS boot partition detected. Installing GRUB with --force blocklists."
-        grub-install --boot-directory=/mnt/boot --force /dev/sda
-    elif ! grub-install --boot-directory=/mnt/boot /dev/sda; then
+        grub-install --root-directory=/mnt --force /dev/sda
+    elif ! grub-install --root-directory=/mnt /dev/sda; then
         echo "grub-install failed. Retrying with --force to allow blocklists on GPT."
-        grub-install --boot-directory=/mnt/boot --force /dev/sda
+        grub-install --root-directory=/mnt --force /dev/sda
     fi
 
     write_grub_config
+    verify_grub_entry
     checkpoint_set "grub_installed"
 }
 
 main() {
+    verify_vps_compatibility
+
     echo "*** Step: ensure_toolchain ***"
     ensure_toolchain
 
