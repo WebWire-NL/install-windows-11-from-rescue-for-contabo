@@ -130,7 +130,7 @@ else
 fi
 
 # Verify required tools exist before continuing
-required_cmds=(parted mkfs.ntfs mount rsync wimlib-imagex grub-install curl grep awk pgrep xargs dpkg-deb)
+required_cmds=(parted mkfs.ntfs mkfs.ext4 mount rsync wimlib-imagex grub-install curl grep awk pgrep xargs dpkg-deb modprobe)
 for cmd in "${required_cmds[@]}"; do
     if ! command_exists "$cmd"; then
         echo "ERROR: required command '$cmd' is missing."
@@ -211,6 +211,18 @@ if [ "$SAFE_RAM_MB" -lt 0 ]; then
     SAFE_RAM_MB=0
 fi
 
+echo "Detected available RAM: ${AVAILABLE_RAM_MB}MB"
+echo "Reserving 512MB; safe RAM for zram: ${SAFE_RAM_MB}MB"
+echo "Estimated ISO download size: ${TOTAL_ISO_SIZE_MB}MB"
+
+if command_exists modprobe; then
+    modprobe zram >/dev/null 2>&1 || true
+fi
+
+if [ ! -e /dev/zram0 ]; then
+    echo "WARNING: zram device /dev/zram0 not present after loading module."
+fi
+
 USE_ZRAM=0
 if [ "$TOTAL_ISO_SIZE_MB" -le "$SAFE_RAM_MB" ]; then
     echo "Creating zram of size ${TOTAL_ISO_SIZE_MB}MB..."
@@ -220,7 +232,9 @@ if [ "$TOTAL_ISO_SIZE_MB" -le "$SAFE_RAM_MB" ]; then
         USE_ZRAM=1
         echo "zram mounted at /mnt/zram0."
     else
-        echo "WARNING: zram format or mount failed; using disk fallback."
+        echo "WARNING: zram format or mount failed; checking zram state and using disk fallback."
+        ls -l /dev/zram0 /sys/block/zram0 2>/dev/null || true
+        cat /sys/block/zram0/disksize 2>/dev/null || true
     fi
 else
     echo "WARNING: Insufficient RAM for zram; using disk fallback."
