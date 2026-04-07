@@ -108,12 +108,18 @@ self_update_script() {
 }
 
 RECREATE_DISK=0
+RESET_ZRAM=0
 CHECK_ONLY=0
+USE_ZRAM=0
 PARSED_ARGS=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --recreate-disk)
             RECREATE_DISK=1
+            shift
+            ;;
+        --reset-zram)
+            RESET_ZRAM=1
             shift
             ;;
         --check-only)
@@ -138,13 +144,35 @@ prompt_url() {
     local default="$1"
     local prompt="$2"
     local value
+    if [ ! -t 0 ]; then
+        echo "$default"
+        return
+    fi
     read -r -p "$prompt" value
     echo "${value:-$default}"
 }
 
 get_content_length() {
     local url="$1"
-    curl -fsI "$url" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r'
+    local size
+
+    if command_exists curl; then
+        size=$(curl -fsIL "$url" 2>/dev/null | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1)
+        if [ -n "$size" ]; then
+            echo "$size"
+            return
+        fi
+    fi
+
+    if command_exists wget; then
+        size=$(wget --spider --server-response --max-redirect=20 "$url" 2>&1 | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1)
+        if [ -n "$size" ]; then
+            echo "$size"
+            return
+        fi
+    fi
+
+    echo ""
 }
 
 download_file() {
@@ -165,12 +193,17 @@ download_file() {
         fi
 
         echo "Downloading $output with aria2c (resume support)"
+        local aria2_args=(--continue=true --file-allocation=none --enable-http-keep-alive=true)
+        if aria2c --help 2>/dev/null | grep -q -- '--enable-http2'; then
+            aria2_args+=(--enable-http2=true)
+        else
+            echo "aria2c does not support --enable-http2; downloading without HTTP/2."
+        fi
+        aria2_args+=(--max-connection-per-server=64 --split=64 --min-split-size=4M)
+        aria2_args+=(--max-tries=0 --retry-wait=15 --timeout=60 --retry-connrefused=true)
+        aria2_args+=(--download-result=full --user-agent="$ua")
         set +e
-        aria2c --continue=true --file-allocation=none --enable-http-keep-alive=true \
-            --enable-http2=true --max-connection-per-server=64 --split=64 --min-split-size=4M \
-            --max-tries=0 --retry-wait=15 --timeout=60 --retry-connrefused=true \
-            --download-result=full --user-agent="$ua" \
-            -d "$dir" -o "$base" --input-file="$session" "$url" >"$log" 2>&1
+        aria2c "${aria2_args[@]}" -d "$dir" -o "$base" --input-file="$session" "$url" >"$log" 2>&1
         local aria2_rc=$?
         set -e
 
@@ -260,10 +293,213 @@ verify_toolchain() {
     fi
 }
 
+verify_disk_layout() {
+    local disk_label
+    disk_label=$(get_disk_label)
+
+    if [ "${FIRMWARE_MODE}" = "bios" ] && [ "${disk_label}" = "gpt" ] && ! has_bios_boot_partition; then
+        echo "WARNING: BIOS firmware on GPT without bios_grub partition. GRUB requires blocklists and may be unreliable."
+    fi
+
+    if [ "${FIRMWARE_MODE}" = "uefi" ] && [ "${disk_label}" != "gpt" ]; then
+        echo "WARNING: UEFI firmware detected but disk is not GPT. Windows install may fail."
+    fi
+
+    if [ "${disk_label}" = "unknown" ]; then
+        echo "ERROR: Unable to determine disk partition label. Verify /dev/sda is accessible."
+        exit 1
+    fi
+}
+
+verify_installer_files() {
+    local errors=0
+
+    if [ ! -f /mnt/bootmgr ]; then
+        echo "ERROR: /mnt/bootmgr is missing. The Windows installer entry cannot boot."
+        errors=1
+    fi
+    if [ ! -f /mnt/sources/boot.wim ]; then
+        echo "ERROR: /mnt/sources/boot.wim is missing. The installer payload is incomplete."
+        errors=1
+    fi
+    if [ ! -d /mnt/sources/virtio ]; then
+        echo "WARNING: /mnt/sources/virtio is missing. VirtIO drivers may not be available during install."
+    fi
+
+    if [ "$errors" -ne 0 ]; then
+        exit 1
+    fi
+}
+
+verify_grub_config() {
+    local cfg_path="/mnt/boot/grub/grub.cfg"
+
+    if [ ! -f "$cfg_path" ]; then
+        echo "ERROR: GRUB config not found at $cfg_path"
+        exit 1
+    fi
+
+    if ! grep -Ei 'menuentry[[:space:]]+.*windows.*installer' "$cfg_path" >/dev/null 2>&1; then
+        echo "ERROR: Expected GRUB menuentry containing \"windows installer\" not found in $cfg_path"
+        exit 1
+    fi
+
+    if ! grep -qi 'search --no-floppy --set=root --file=/bootmgr' "$cfg_path" >/dev/null 2>&1; then
+        echo "WARNING: GRUB entry may not point to /bootmgr correctly."
+    fi
+    if ! grep -qi 'insmod ntfs' "$cfg_path" >/dev/null 2>&1; then
+        echo "WARNING: GRUB entry may not load NTFS support."
+    fi
+}
+
+check_grub_config_noexit() {
+    local cfg_path="/mnt/boot/grub/grub.cfg"
+    if [ ! -f "$cfg_path" ]; then
+        echo "ERROR: GRUB config not found at $cfg_path"
+        return 1
+    fi
+
+    local ok=0
+    if ! grep -Ei 'menuentry[[:space:]]+.*windows.*installer' "$cfg_path" >/dev/null 2>&1; then
+        echo "ERROR: Expected GRUB menuentry containing \"windows installer\" not found in $cfg_path"
+        ok=1
+    else
+        echo "INFO: GRUB menuentry for Windows installer found."
+    fi
+
+    if ! grep -qi 'search --no-floppy --set=root --file=/bootmgr' "$cfg_path" >/dev/null 2>&1; then
+        echo "WARNING: GRUB entry may not point to /bootmgr correctly."
+    fi
+    if ! grep -qi 'insmod ntfs' "$cfg_path" >/dev/null 2>&1; then
+        echo "WARNING: GRUB entry may not load NTFS support."
+    fi
+
+    return "$ok"
+}
+
+manual_rescue_verification() {
+    echo "*** Manual rescue verification ***"
+    mount_existing_partitions
+
+    local failed=0
+    if mountpoint -q /mnt; then
+        echo "- /mnt is mounted"
+    else
+        echo "ERROR: /mnt is not mounted"
+        failed=1
+    fi
+    if mountpoint -q /root/windisk; then
+        echo "- /root/windisk is mounted"
+    else
+        echo "WARNING: /root/windisk is not mounted"
+    fi
+
+    if [ -f /mnt/bootmgr ]; then
+        echo "- /mnt/bootmgr is present"
+    else
+        echo "ERROR: /mnt/bootmgr is missing"
+        failed=1
+    fi
+    if [ -f /mnt/sources/boot.wim ]; then
+        echo "- /mnt/sources/boot.wim is present"
+    else
+        echo "ERROR: /mnt/sources/boot.wim is missing"
+        failed=1
+    fi
+    if [ -d /mnt/sources/virtio ]; then
+        echo "- /mnt/sources/virtio is present"
+    else
+        echo "WARNING: /mnt/sources/virtio is missing"
+    fi
+
+    if [ -f /mnt/boot/grub/grub.cfg ]; then
+        echo "- /mnt/boot/grub/grub.cfg is present"
+        check_grub_config_noexit || failed=1
+    else
+        echo "ERROR: /mnt/boot/grub/grub.cfg is missing"
+        failed=1
+    fi
+
+    if verify_grub_installation_noexit >/dev/null 2>&1; then
+        echo "- GRUB installation artifacts appear valid"
+    else
+        echo "ERROR: GRUB installation artifacts are incomplete or invalid"
+        failed=1
+    fi
+
+    if command_exists grub-probe; then
+        if grub-probe --target=fs /mnt >/dev/null 2>&1 && grub-probe --target=device /mnt >/dev/null 2>&1; then
+            echo "- grub-probe can resolve /mnt filesystem and device"
+        else
+            echo "ERROR: grub-probe failed to resolve /mnt"
+            failed=1
+        fi
+    else
+        echo "WARNING: grub-probe unavailable; skipping probe validation"
+    fi
+
+    if [ "$failed" -eq 0 ]; then
+        echo "Manual rescue verification passed. The installer filesystem and GRUB entry appear ready."
+    else
+        echo "Manual rescue verification found issues. Review the output above before rebooting."
+    fi
+    echo "*** End manual rescue verification ***"
+    return "$failed"
+}
+
+cleanup_zram() {
+    if mountpoint -q /mnt/zram0 2>/dev/null; then
+        echo "Unmounting stale zram at /mnt/zram0..."
+        umount /mnt/zram0 || true
+    fi
+    if [ -e /dev/zram0 ]; then
+        swapoff /dev/zram0 2>/dev/null || true
+        echo 1 > /sys/block/zram0/reset 2>/dev/null || true
+    fi
+    rm -rf /mnt/zram0 2>/dev/null || true
+}
+
 cleanup_partition_state() {
     echo "Cleaning up stale /dev/sda state..."
+    cleanup_zram
     umount /mnt 2>/dev/null || true
     umount /root/windisk 2>/dev/null || true
+    if command_exists fuser; then
+        if mountpoint -q /mnt 2>/dev/null; then
+            echo "Forcing umount of /mnt via fuser..."
+            fuser -km /mnt >/dev/null 2>&1 || true
+            umount -l /mnt >/dev/null 2>&1 || true
+        fi
+        if mountpoint -q /root/windisk 2>/dev/null; then
+            echo "Forcing umount of /root/windisk via fuser..."
+            fuser -km /root/windisk >/dev/null 2>&1 || true
+            umount -l /root/windisk >/dev/null 2>&1 || true
+        fi
+        if mountpoint -q /mnt/zram0 2>/dev/null; then
+            echo "Forcing umount of /mnt/zram0 via fuser..."
+            fuser -km /mnt/zram0 >/dev/null 2>&1 || true
+            umount -l /mnt/zram0 >/dev/null 2>&1 || true
+        fi
+    fi
+    if mountpoint -q /mnt 2>/dev/null; then
+        echo "Attempting lazy umount of /mnt..."
+        umount -l /mnt >/dev/null 2>&1 || true
+    fi
+    if mountpoint -q /root/windisk 2>/dev/null; then
+        echo "Attempting lazy umount of /root/windisk..."
+        umount -l /root/windisk >/dev/null 2>&1 || true
+    fi
+    if mountpoint -q /mnt/zram0 2>/dev/null; then
+        echo "Attempting lazy umount of /mnt/zram0..."
+        umount -l /mnt/zram0 >/dev/null 2>&1 || true
+    fi
+    if command_exists pkill; then
+        echo "Killing lingering NTFS mount processes..."
+        pkill -f '/sbin/mount.ntfs .* /root/windisk' >/dev/null 2>&1 || true
+        pkill -f '/sbin/mount.ntfs .* /mnt' >/dev/null 2>&1 || true
+        pkill -f 'ntfs-3g .* /root/windisk' >/dev/null 2>&1 || true
+        pkill -f 'ntfs-3g .* /mnt' >/dev/null 2>&1 || true
+    fi
     if command_exists partprobe; then
         partprobe /dev/sda >/dev/null 2>&1 || true
     fi
@@ -305,11 +541,85 @@ get_disk_label() {
     parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]'
 }
 
+report_rescue_state() {
+    detect_firmware_mode
+    local disk_label
+    disk_label=$(get_disk_label)
+    echo "*** Rescue system state ***"
+    echo "Firmware mode: ${FIRMWARE_MODE}"
+    echo "Disk label: ${disk_label}"
+    if command_exists parted; then
+        echo "Disk layout:"
+        parted /dev/sda --script print || true
+    fi
+
+    echo "Mount status:"
+    echo "  /mnt: $(mountpoint -q /mnt && echo mounted || echo not mounted)"
+    echo "  /root/windisk: $(mountpoint -q /root/windisk && echo mounted || echo not mounted)"
+    echo "  /mnt/zram0: $(mountpoint -q /mnt/zram0 && echo mounted || echo not mounted)"
+
+    echo "Rescue media files:"
+    echo "  /mnt/bootmgr: $( [ -f /mnt/bootmgr ] && echo yes || echo no )"
+    echo "  /mnt/sources/boot.wim: $( [ -f /mnt/sources/boot.wim ] && echo yes || echo no )"
+    echo "  /mnt/sources/virtio: $( [ -d /mnt/sources/virtio ] && echo yes || echo no )"
+    echo "  /mnt/boot/grub/grub.cfg: $( [ -f /mnt/boot/grub/grub.cfg ] && echo yes || echo no )"
+    echo "  /mnt/boot/grub/i386-pc/core.img: $( [ -f /mnt/boot/grub/i386-pc/core.img ] && echo yes || echo no )"
+    echo "  /mnt/boot/grub/i386-pc/normal.mod: $( [ -f /mnt/boot/grub/i386-pc/normal.mod ] && echo yes || echo no )"
+
+    echo "Downloaded ISO files:"
+    echo "  /mnt/zram0/windisk/Windows.iso: $( [ -f /mnt/zram0/windisk/Windows.iso ] && echo yes || echo no )"
+    echo "  /mnt/zram0/windisk/VirtIO.iso: $( [ -f /mnt/zram0/windisk/VirtIO.iso ] && echo yes || echo no )"
+    echo "  /root/windisk/Windows.iso: $( [ -f /root/windisk/Windows.iso ] && echo yes || echo no )"
+    echo "  /root/windisk/VirtIO.iso: $( [ -f /root/windisk/VirtIO.iso ] && echo yes || echo no )"
+    echo "*** End rescue state ***"
+}
+
+assess_rescue_viability() {
+    echo "*** Rescue viability assessment ***"
+    local rescue_ok=1
+    if [ ! -b /dev/sda ]; then
+        echo "ERROR: /dev/sda is not available. Cannot repair disk layout."
+        rescue_ok=0
+    fi
+    if ! command_exists apt-get; then
+        echo "WARNING: apt-get is missing. The script may not be able to install required packages."
+    fi
+    if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ] && [ -d /mnt/boot/grub ]; then
+        echo "INFO: Installer media and GRUB files already exist. Rescue is likely possible without re-downloading."
+    else
+        echo "INFO: Installer media is not complete. Rescue will proceed by downloading or extracting missing files if disk space allows."
+    fi
+    if [ "$rescue_ok" -eq 1 ]; then
+        echo "Rescue evaluation: current system is recoverable by this script."
+    else
+        echo "Rescue evaluation: current system is not recoverable in this environment."
+    fi
+    echo "*** End rescue viability assessment ***"
+}
+
 detect_firmware_mode() {
     if [ -d /sys/firmware/efi ]; then
         FIRMWARE_MODE="uefi"
     else
         FIRMWARE_MODE="bios"
+    fi
+}
+
+detect_auto_repair_flags() {
+    detect_firmware_mode
+    local disk_label
+    disk_label=$(get_disk_label)
+
+    if [ "$RECREATE_DISK" -eq 0 ] && [ "$FIRMWARE_MODE" = "bios" ] && [ "$disk_label" = "gpt" ] && ! has_bios_boot_partition; then
+        echo "Auto-detected unsafe BIOS+GPT without bios_grub. Enabling automatic recreate-disk."
+        RECREATE_DISK=1
+    fi
+
+    if [ "$RESET_ZRAM" -eq 0 ] && mountpoint -q /mnt/zram0 2>/dev/null; then
+        if [ ! -f /mnt/zram0/windisk/Windows.iso ] && [ ! -f /mnt/zram0/windisk/VirtIO.iso ]; then
+            echo "Auto-detected stale zram mount with no ISO files. Resetting zram state."
+            RESET_ZRAM=1
+        fi
     fi
 }
 
@@ -331,7 +641,15 @@ verify_vps_compatibility() {
     if [ "${FIRMWARE_MODE}" = "bios" ] && [ "${disk_label}" = "gpt" ] && ! has_bios_boot_partition; then
         echo "WARNING: BIOS mode with GPT disk and no bios_grub partition detected."
         echo "         GRUB installation will require blocklists, which is less reliable."
-        echo "         If you want a safer setup, rerun with --recreate-disk to force MBR layout."
+        if [ "$CHECK_ONLY" -eq 0 ]; then
+            if [ "$RECREATE_DISK" -eq 0 ]; then
+                echo "ERROR: Unsafe BIOS+GPT layout detected. Re-run with --recreate-disk to convert /dev/sda to MBR and rebuild the installer layout."
+                exit 1
+            fi
+            echo "INFO: --recreate-disk requested; the script will recreate /dev/sda as MBR."
+        else
+            echo "         Run the installer with --recreate-disk to fix this layout before rebooting."
+        fi
     fi
 
     if [ "${FIRMWARE_MODE}" = "uefi" ] && [ "${disk_label}" != "gpt" ]; then
@@ -391,26 +709,17 @@ setup_partitions_and_mounts() {
         mount /dev/sda2 /root/windisk 2>/dev/null || true
     fi
 
-    if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
-        if has_bios_boot_partition; then
-            echo "Existing Windows installer files detected on /mnt. Skipping partition recreation."
+    if [ "$RECREATE_DISK" -eq 0 ]; then
+        if mount | grep -qE '^/dev/sda1 on /mnt ' && mount | grep -qE '^/dev/sda2 on /root/windisk '; then
+            echo "Existing partitions are already mounted; skipping partition recreation."
             checkpoint_set "partitions"
             return
         fi
-        if parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]' | grep -q '^gpt$'; then
-            if [ "$RECREATE_DISK" -eq 1 ]; then
-                echo "Recreating /dev/sda as MBR because GPT has no BIOS boot partition."
-            else
-                echo "WARNING: /dev/sda is GPT without a BIOS boot partition."
-                echo "This disk layout is unreliable for BIOS GRUB install, but the script will continue using existing installer files."
-                echo "If you prefer a cleaner MBR layout, rerun with --recreate-disk."
-                checkpoint_set "partitions"
-                return
-            fi
-        else
-            echo "Existing Windows installer files detected on /mnt. Skipping partition recreation."
-            checkpoint_set "partitions"
-            return
+
+        if [ "$(parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')" = "gpt" ] && ! has_bios_boot_partition; then
+            echo "WARNING: /dev/sda is GPT without a BIOS boot partition."
+            echo "         This layout is unsafe for BIOS GRUB boot. The script will recreate /dev/sda as MBR automatically."
+            RECREATE_DISK=1
         fi
     fi
 
@@ -441,6 +750,10 @@ setup_partitions_and_mounts() {
     cleanup_partition_state
 
     parted /dev/sda --script -- mklabel msdos
+    if [ "$(parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')" != "msdos" ]; then
+        echo "ERROR: Failed to set MBR partition table on /dev/sda."
+        exit 1
+    fi
     parted /dev/sda --script -- mkpart primary ntfs 1MB ${part_size_mb}MB
     parted /dev/sda --script -- mkpart primary ntfs ${part_size_mb}MB 100%
     partprobe /dev/sda
@@ -464,29 +777,26 @@ setup_partitions_and_mounts() {
 }
 
 find_existing_downloads() {
-    if [ -f /mnt/zram0/windisk/Windows.iso ] || [ -f /mnt/zram0/windisk/VirtIO.iso ]; then
+    if [ -f /mnt/zram0/windisk/Windows.iso ] && [ -f /mnt/zram0/windisk/VirtIO.iso ]; then
         USE_ZRAM=1
         WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
         VIRTIO_ISO="/mnt/zram0/windisk/VirtIO.iso"
-        if [ -f "$WINDOWS_ISO" ]; then
-            WINDOWS_ISO_SIZE=$(stat -c%s "$WINDOWS_ISO")
-        fi
-        if [ -f "$VIRTIO_ISO" ]; then
-            VIRTIO_ISO_SIZE=$(stat -c%s "$VIRTIO_ISO")
-        fi
+        WINDOWS_ISO_SIZE=$(stat -c%s "$WINDOWS_ISO")
+        VIRTIO_ISO_SIZE=$(stat -c%s "$VIRTIO_ISO")
         return 0
     fi
 
-    if [ -f /root/windisk/Windows.iso ] || [ -f /root/windisk/VirtIO.iso ]; then
+    if mountpoint -q /mnt/zram0; then
+        echo "Partial or stale zram detected without both ISOs. Clearing zram state."
+        cleanup_zram
+    fi
+
+    if [ -f /root/windisk/Windows.iso ] && [ -f /root/windisk/VirtIO.iso ]; then
         USE_ZRAM=0
         WINDOWS_ISO="/root/windisk/Windows.iso"
         VIRTIO_ISO="/root/windisk/VirtIO.iso"
-        if [ -f "$WINDOWS_ISO" ]; then
-            WINDOWS_ISO_SIZE=$(stat -c%s "$WINDOWS_ISO")
-        fi
-        if [ -f "$VIRTIO_ISO" ]; then
-            VIRTIO_ISO_SIZE=$(stat -c%s "$VIRTIO_ISO")
-        fi
+        WINDOWS_ISO_SIZE=$(stat -c%s "$WINDOWS_ISO")
+        VIRTIO_ISO_SIZE=$(stat -c%s "$VIRTIO_ISO")
         return 0
     fi
 
@@ -553,6 +863,16 @@ print_current_state() {
 
 setup_download_environment() {
     print_current_state
+    if [ "$RESET_ZRAM" -eq 1 ]; then
+        echo "--reset-zram requested; clearing existing zram state before downloading."
+        cleanup_zram
+        USE_ZRAM=0
+        WINDOWS_ISO=""
+        VIRTIO_ISO=""
+        WINDOWS_ISO_SIZE=0
+        VIRTIO_ISO_SIZE=0
+    fi
+
     if find_existing_downloads; then
         echo "Existing downloaded ISOs detected. Skipping URL prompts."
         WINDOWS_ISO_URL=""
@@ -581,14 +901,36 @@ setup_download_environment() {
         fi
     fi
 
-    if [ -z "${WINDOWS_ISO_SIZE:-}" ] || [ -z "${VIRTIO_ISO_SIZE:-}" ]; then
-        echo "ERROR: Unable to determine ISO sizes from HTTP headers."
-        exit 1
+    local default_windows_iso_size=$((8 * 1024 * 1024 * 1024))
+    local default_virtio_iso_size=$((700 * 1024 * 1024))
+
+    if [ -z "${WINDOWS_ISO_SIZE:-}" ] || [ "${WINDOWS_ISO_SIZE:-0}" -le 0 ]; then
+        if [ -n "${WINDOWS_ISO_URL:-}" ]; then
+            echo "WARNING: Windows ISO size unknown. Estimating ${default_windows_iso_size} bytes for zram decision."
+            WINDOWS_ISO_SIZE=$default_windows_iso_size
+        else
+            WINDOWS_ISO_SIZE=0
+        fi
+    fi
+    if [ -z "${VIRTIO_ISO_SIZE:-}" ] || [ "${VIRTIO_ISO_SIZE:-0}" -le 0 ]; then
+        if [ -n "${VIRTIO_ISO_URL:-}" ]; then
+            echo "WARNING: VirtIO ISO size unknown. Estimating ${default_virtio_iso_size} bytes for zram decision."
+            VIRTIO_ISO_SIZE=$default_virtio_iso_size
+        else
+            VIRTIO_ISO_SIZE=0
+        fi
     fi
 
-    TOTAL_ISO_SIZE=$((WINDOWS_ISO_SIZE + VIRTIO_ISO_SIZE))
-    ZRAM_SIZE_MARGIN_MB=1024
-    TOTAL_ISO_SIZE_MB=$((TOTAL_ISO_SIZE / 1024 / 1024 + ZRAM_SIZE_MARGIN_MB))
+    if [ "${WINDOWS_ISO_SIZE:-0}" -le 0 ] || [ "${VIRTIO_ISO_SIZE:-0}" -le 0 ]; then
+        echo "WARNING: Unable to determine both ISO sizes. Using disk fallback instead of zram."
+        USE_ZRAM=0
+        TOTAL_ISO_SIZE=0
+        TOTAL_ISO_SIZE_MB=0
+    else
+        TOTAL_ISO_SIZE=$((WINDOWS_ISO_SIZE + VIRTIO_ISO_SIZE))
+        ZRAM_SIZE_MARGIN_MB=1024
+        TOTAL_ISO_SIZE_MB=$((TOTAL_ISO_SIZE / 1024 / 1024 + ZRAM_SIZE_MARGIN_MB))
+    fi
 
     if [ -n "${WINDOWS_ISO:-}" ] && [ -n "${VIRTIO_ISO:-}" ]; then
         echo "Continuing with existing downloads: $WINDOWS_ISO and $VIRTIO_ISO"
@@ -611,38 +953,68 @@ setup_download_environment() {
 
     echo "Detected available RAM: ${AVAILABLE_RAM_MB}MB"
     echo "Reserving 512MB; safe RAM for zram: ${SAFE_RAM_MB}MB"
-    echo "Estimated ISO download size: $((TOTAL_ISO_SIZE / 1024 / 1024))MB"
-    echo "Allocating zram with buffer: ${TOTAL_ISO_SIZE_MB}MB"
 
-    if [ "$TOTAL_ISO_SIZE_MB" -le "$SAFE_RAM_MB" ]; then
-        echo "Creating zram of size ${TOTAL_ISO_SIZE_MB}MB..."
-        if mountpoint -q /mnt/zram0 2>/dev/null; then
-            umount /mnt/zram0 || true
-        fi
-        if [ -e /dev/zram0 ]; then
-            swapoff /dev/zram0 2>/dev/null || true
-            echo 1 > /sys/block/zram0/reset 2>/dev/null || true
-        fi
-        modprobe zram >/dev/null 2>&1 || true
-        echo lz4 > /sys/block/zram0/comp_algorithm || true
-        echo "${TOTAL_ISO_SIZE_MB}M" > /sys/block/zram0/disksize
-        zram_disksize=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)
-        if [ "$zram_disksize" -eq 0 ]; then
-            echo "WARNING: zram disksize remained 0 after initialization. Falling back to disk."
-            USE_ZRAM=0
-        elif mkfs.ext4 -q /dev/zram0 && mkdir -p /mnt/zram0 && mount /dev/zram0 /mnt/zram0; then
-            USE_ZRAM=1
-            echo "zram mounted at /mnt/zram0."
-        else
-            echo "WARNING: zram format or mount failed. Falling back to disk."
-            USE_ZRAM=0
-        fi
+    if [ "${USE_ZRAM:-0}" -eq 0 ] && [ "${WINDOWS_ISO_SIZE:-0}" -gt 0 ] && [ "${VIRTIO_ISO_SIZE:-0}" -gt 0 ] && [ "${TOTAL_ISO_SIZE:-0}" -gt 0 ] && [ "$TOTAL_ISO_SIZE_MB" -le "$SAFE_RAM_MB" ]; then
+        echo "Memory is sufficient for both ISOs; enabling zram for downloads."
+        USE_ZRAM=1
     else
-        echo "WARNING: Insufficient RAM for zram; using disk fallback."
+        if [ "${USE_ZRAM:-0}" -eq 0 ]; then
+            echo "Skipping zram because total ISO size is unknown or exceeds safe RAM."
+        fi
+    fi
+
+    if [ "${TOTAL_ISO_SIZE:-0}" -le 0 ]; then
+        echo "Unable to determine total ISO size; disabling zram fallback."
         USE_ZRAM=0
     fi
 
-    if [ "$USE_ZRAM" -eq 1 ]; then
+    if [ "${USE_ZRAM:-0}" -eq 1 ] && mountpoint -q /mnt/zram0; then
+        local zram_avail_kb
+        zram_avail_kb=$(df --output=avail /mnt/zram0 2>/dev/null | tail -n1 | tr -d ' ')
+        zram_avail_mb=$((zram_avail_kb / 1024))
+        if [ "$zram_avail_mb" -lt "$TOTAL_ISO_SIZE_MB" ]; then
+            echo "Existing zram does not have enough free space (${zram_avail_mb}MB) for ${TOTAL_ISO_SIZE_MB}MB. Clearing zram state."
+            cleanup_zram
+            USE_ZRAM=0
+        fi
+    fi
+
+    if [ "${USE_ZRAM:-0}" -eq 1 ]; then
+        echo "Estimated ISO download size: $((TOTAL_ISO_SIZE / 1024 / 1024))MB"
+        echo "Allocating zram with buffer: ${TOTAL_ISO_SIZE_MB}MB"
+
+        if [ "$TOTAL_ISO_SIZE_MB" -le "$SAFE_RAM_MB" ]; then
+            echo "Creating zram of size ${TOTAL_ISO_SIZE_MB}MB..."
+            if mountpoint -q /mnt/zram0 2>/dev/null; then
+                umount /mnt/zram0 || true
+            fi
+            if [ -e /dev/zram0 ]; then
+                swapoff /dev/zram0 2>/dev/null || true
+                echo 1 > /sys/block/zram0/reset 2>/dev/null || true
+            fi
+            modprobe zram >/dev/null 2>&1 || true
+            echo lz4 > /sys/block/zram0/comp_algorithm || true
+            echo "${TOTAL_ISO_SIZE_MB}M" > /sys/block/zram0/disksize
+            zram_disksize=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)
+            if [ "$zram_disksize" -eq 0 ]; then
+                echo "WARNING: zram disksize remained 0 after initialization. Falling back to disk."
+                USE_ZRAM=0
+            elif mkfs.ext4 -q /dev/zram0 && mkdir -p /mnt/zram0 && mount /dev/zram0 /mnt/zram0; then
+                USE_ZRAM=1
+                echo "zram mounted at /mnt/zram0."
+            else
+                echo "WARNING: zram format or mount failed. Falling back to disk."
+                USE_ZRAM=0
+            fi
+        else
+            echo "WARNING: Insufficient RAM for zram; using disk fallback."
+            USE_ZRAM=0
+        fi
+    else
+        echo "Using disk fallback for ISO downloads because ISO sizes are unknown or unavailable."
+    fi
+
+    if [ "${USE_ZRAM:-0}" -eq 1 ]; then
         mkdir -p /mnt/zram0/windisk
         WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
         VIRTIO_ISO="/mnt/zram0/windisk/VirtIO.iso"
@@ -703,12 +1075,18 @@ download_if_needed() {
 }
 
 copy_windows_media() {
-    if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
-        echo "Windows installer files already present on /mnt. Skipping Windows ISO extraction."
+    if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ] && [ -z "${WINDOWS_ISO:-}" ]; then
+        echo "Windows installer files already present on /mnt and no Windows ISO is available. Skipping Windows ISO extraction."
         checkpoint_set "windows_extracted"
         return
     fi
-    echo "Extracting Windows ISO to /mnt..."
+
+    if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
+        echo "Windows installer files already exist on /mnt. Re-extracting from the provided Windows ISO to ensure the desired media is installed."
+    else
+        echo "Extracting Windows ISO to /mnt..."
+    fi
+
     WINFILE_MOUNT=$(mktemp -d)
     mount -o loop "$WINDOWS_ISO" "$WINFILE_MOUNT"
     rsync -a --info=progress2 "$WINFILE_MOUNT"/ /mnt/
@@ -719,12 +1097,18 @@ copy_windows_media() {
 }
 
 copy_virtio_media() {
-    if [ -d /mnt/sources/virtio ] && [ -f /mnt/sources/virtio/NetKVM/2k3/amd64/netkvm.sys ]; then
-        echo "VirtIO drivers already copied to /mnt/sources/virtio. Skipping VirtIO ISO extraction."
+    if [ -d /mnt/sources/virtio ] && [ -f /mnt/sources/virtio/NetKVM/2k3/amd64/netkvm.sys ] && [ -z "${VIRTIO_ISO:-}" ]; then
+        echo "VirtIO drivers already present on /mnt/sources/virtio and no VirtIO ISO is available. Skipping VirtIO ISO extraction."
         checkpoint_set "virtio_extracted"
         return
     fi
-    echo "Extracting VirtIO ISO to /mnt/sources/virtio..."
+
+    if [ -d /mnt/sources/virtio ] && [ -f /mnt/sources/virtio/NetKVM/2k3/amd64/netkvm.sys ]; then
+        echo "VirtIO drivers already exist in /mnt/sources/virtio. Re-extracting from the provided VirtIO ISO."
+    else
+        echo "Extracting VirtIO ISO to /mnt/sources/virtio..."
+    fi
+
     ISO_MOUNT_DIR=$(mktemp -d)
     mount -o loop "$VIRTIO_ISO" "$ISO_MOUNT_DIR"
     mkdir -p /mnt/sources/virtio
@@ -899,21 +1283,35 @@ verify_grub_entry() {
 }
 
 verify_grub_installation() {
+    if ! verify_grub_installation_noexit; then
+        exit 1
+    fi
+}
+
+verify_grub_installation_noexit() {
     local grub_dir="/mnt/boot/grub"
     local core_img="${grub_dir}/i386-pc/core.img"
+    local normal_mod="${grub_dir}/i386-pc/normal.mod"
 
     if [ ! -d "$grub_dir" ]; then
         echo "ERROR: GRUB directory $grub_dir does not exist"
-        exit 1
+        return 1
     fi
 
     if [ ! -f "$core_img" ]; then
         echo "ERROR: GRUB core image missing: $core_img"
         echo "       grub-install may have failed to install the BIOS core files."
-        exit 1
+        return 1
     fi
 
-    echo "GRUB installation artifacts verified: $core_img"
+    if [ ! -f "$normal_mod" ]; then
+        echo "ERROR: GRUB normal module missing: $normal_mod"
+        echo "       GRUB may not be able to execute menu entries."
+        return 1
+    fi
+
+    echo "GRUB installation artifacts verified: $core_img and $normal_mod"
+    return 0
 }
 
 verify_grub_probe() {
@@ -952,9 +1350,13 @@ mount_existing_partitions() {
 run_preflight_checks() {
     echo "*** Step: preflight check-only validation ***"
     verify_vps_compatibility
+    detect_auto_repair_flags
+    ensure_toolchain
     verify_toolchain
 
     mount_existing_partitions
+    report_rescue_state
+    assess_rescue_viability
 
     if mountpoint -q /mnt; then
         echo "/mnt is mounted"
@@ -969,10 +1371,15 @@ run_preflight_checks() {
 
     if [ -f /mnt/boot/grub/grub.cfg ]; then
         echo "Found existing GRUB config at /mnt/boot/grub/grub.cfg"
+        verify_grub_config
         verify_grub_entry
     else
         echo "No GRUB config found at /mnt/boot/grub/grub.cfg"
     fi
+
+    verify_installer_files
+    verify_disk_layout
+    manual_rescue_verification
 
     if [ -f /mnt/bootmgr ]; then
         echo "Found /mnt/bootmgr"
@@ -994,14 +1401,38 @@ run_preflight_checks() {
 }
 
 write_grub_config() {
+    detect_firmware_mode
     mkdir -p /mnt/boot/grub
 
     if [ ! -f /mnt/bootmgr ]; then
         echo "WARNING: /mnt/bootmgr not found. GRUB boot entry may fail."
     fi
 
-    cat > /mnt/boot/grub/grub.cfg <<'EOF'
-menuentry "windows installer" {
+    local uefi_loader_path=""
+    if find_uefi_loader_path >/dev/null 2>&1; then
+        uefi_loader_path=$(find_uefi_loader_path)
+    fi
+
+    cat > /mnt/boot/grub/grub.cfg <<EOF
+set timeout=5
+set default=0
+
+EOF
+
+    if [ "${FIRMWARE_MODE}" = "uefi" ] && [ -n "${uefi_loader_path}" ]; then
+        cat >> /mnt/boot/grub/grub.cfg <<EOF
+menuentry "windows installer (UEFI)" {
+    insmod ntfs
+    search --no-floppy --set=root --file=${uefi_loader_path}
+    chainloader ${uefi_loader_path}
+    boot
+}
+
+EOF
+    fi
+
+    cat >> /mnt/boot/grub/grub.cfg <<EOF
+menuentry "windows installer (BIOS)" {
     insmod ntfs
     search --no-floppy --set=root --file=/bootmgr
     ntldr /bootmgr
@@ -1009,14 +1440,13 @@ menuentry "windows installer" {
 }
 EOF
 
-    if find_uefi_loader_path >/dev/null 2>&1; then
-        local uefi_path
-        uefi_path=$(find_uefi_loader_path)
+    if [ -n "${uefi_loader_path}" ] && [ "${FIRMWARE_MODE}" != "uefi" ]; then
         cat >> /mnt/boot/grub/grub.cfg <<EOF
+
 menuentry "windows installer (UEFI)" {
     insmod ntfs
-    search --no-floppy --set=root --file=${uefi_path}
-    chainloader ${uefi_path}
+    search --no-floppy --set=root --file=${uefi_loader_path}
+    chainloader ${uefi_loader_path}
     boot
 }
 EOF
@@ -1024,17 +1454,36 @@ EOF
 }
 
 install_grub_if_needed() {
+    mount_existing_partitions
+
+    if ! mountpoint -q /mnt; then
+        echo "ERROR: /mnt is not mounted, cannot install GRUB."
+        exit 1
+    fi
+
+    if ! command_exists grub-install; then
+        echo "ERROR: grub-install is missing. Ensure grub-pc is installed before running this script."
+        exit 1
+    fi
+
     if checkpoint_done "grub_installed"; then
-        echo "GRUB already installed (checkpoint). Updating GRUB config."
-        write_grub_config
-        verify_grub_entry
-        return
+        echo "GRUB already installed (checkpoint). Verifying installation."
+        if verify_grub_installation_noexit && verify_grub_probe >/dev/null 2>&1; then
+            echo "Existing GRUB installation appears valid. Updating GRUB config."
+            write_grub_config
+            verify_grub_entry
+            return
+        fi
+        echo "Existing GRUB installation is not valid. Reinstalling GRUB."
     fi
 
     echo "Installing or updating GRUB on /dev/sda..."
     mkdir -p /mnt/boot/grub
 
-    local grub_args=(--target="${GRUB_INSTALL_TARGET}" --root-directory=/mnt)
+    local grub_args=(--root-directory=/mnt)
+    if [ -n "${GRUB_INSTALL_TARGET}" ]; then
+        grub_args+=(--target="${GRUB_INSTALL_TARGET}")
+    fi
 
     if gpt_needs_blocklists; then
         echo "GPT without BIOS boot partition detected. Installing GRUB with --force blocklists."
@@ -1053,6 +1502,7 @@ install_grub_if_needed() {
 
 main() {
     verify_vps_compatibility
+    detect_auto_repair_flags
 
     if [ "$CHECK_ONLY" -eq 1 ]; then
         run_preflight_checks
@@ -1061,6 +1511,10 @@ main() {
 
     echo "*** Step: ensure_toolchain ***"
     ensure_toolchain
+
+    echo "*** Step: inspect rescue state ***"
+    mount_existing_partitions
+    report_rescue_state
 
     echo "*** Step: partitions & mounts ***"
     setup_partitions_and_mounts
@@ -1096,6 +1550,9 @@ main() {
 
     echo "*** Step: install GRUB ***"
     install_grub_if_needed
+
+    echo "*** Step: final rescue verification ***"
+    manual_rescue_verification || true
 
     echo "*** Final checks ***"
     ls -lh /mnt/bootmgr /mnt/sources/boot.wim || true
