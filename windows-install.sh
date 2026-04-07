@@ -73,16 +73,39 @@ get_content_length() {
 }
 
 echo "*** Preparing system packages ***"
-apt-get update -y
-mkdir -p /tmp/apt-archives
-apt-get -y -o Dir::Cache::archives=/tmp/apt-archives --no-install-recommends install linux-image-amd64 initramfs-tools grub2 wimtools ntfs-3g gdisk rsync curl wget aria2 zram-tools
-apt-get -y -o Dir::Cache::archives=/tmp/apt-archives clean
-rm -rf /tmp/apt-archives
+ROOT_AVAIL_KB=$(df --output=avail / | tail -n 1)
+if [ "$ROOT_AVAIL_KB" -lt 300000 ]; then
+    echo "WARNING: low root filesystem space ($ROOT_AVAIL_KB KB). Skipping package installation."
+    echo "Make sure required tools are already available in the rescue environment."
+else
+    apt-get update
+    mkdir -p /tmp/apt-archives
+    apt-get -y -o Dir::Cache::archives=/tmp/apt-archives --no-install-recommends install linux-image-amd64 initramfs-tools grub2 wimtools ntfs-3g gdisk rsync curl wget aria2 zram-tools
+    apt-get -y -o Dir::Cache::archives=/tmp/apt-archives clean
+    rm -rf /tmp/apt-archives
+fi
+
+# Verify required tools exist before continuing
+required_cmds=(parted mkfs.ntfs mount rsync wimlib-imagex grub-install curl grep awk pgrep xargs)
+for cmd in "${required_cmds[@]}"; do
+    if ! command_exists "$cmd"; then
+        echo "ERROR: required command '$cmd' is missing. Install it or free root space and rerun the script."
+        exit 1
+    fi
+done
 
 disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
 disk_size_mb=$((disk_size_gb * 1024))
 part_size_mb=$((disk_size_mb / 2))
 echo "*** Creating disk partitions ***"
+if command_exists sgdisk; then
+    echo "Wiping existing partition table on /dev/sda..."
+    sgdisk --zap-all /dev/sda || true
+fi
+if command_exists wipefs; then
+    echo "Wiping filesystem signatures on /dev/sda..."
+    wipefs -a /dev/sda || true
+fi
 parted /dev/sda --script -- mklabel gpt
 parted /dev/sda --script -- mkpart primary ntfs 1MB ${part_size_mb}MB
 parted /dev/sda --script -- mkpart primary ntfs ${part_size_mb}MB 100%
