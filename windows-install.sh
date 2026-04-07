@@ -74,24 +74,23 @@ get_content_length() {
 
 echo "*** Preparing system packages ***"
 ROOT_AVAIL_KB=$(df --output=avail / | tail -n 1)
-if [ "$ROOT_AVAIL_KB" -lt 300000 ]; then
+if [ "$ROOT_AVAIL_KB" -lt 500000 ]; then
     echo "WARNING: low root filesystem space ($ROOT_AVAIL_KB KB). Skipping package installation."
     echo "Make sure required tools are already available in the rescue environment."
 else
-    apt-get update
-    mkdir -p /tmp/apt-archives
-    apt-get -y -o Dir::Cache::archives=/tmp/apt-archives --no-install-recommends install linux-image-amd64 initramfs-tools grub2 wimtools ntfs-3g gdisk rsync curl wget aria2 zram-tools
-    apt-get -y -o Dir::Cache::archives=/tmp/apt-archives clean
-    rm -rf /tmp/apt-archives
+    mkdir -p /tmp/apt-archives /tmp/apt-lists
+    apt-get -y -o Dir::State::lists=/tmp/apt-lists -o Dir::Cache::archives=/tmp/apt-archives update
+    apt-get -y -o Dir::State::lists=/tmp/apt-lists -o Dir::Cache::archives=/tmp/apt-archives --no-install-recommends install grub2 wimtools ntfs-3g gdisk rsync curl wget aria2 zram-tools
+    apt-get -y -o Dir::State::lists=/tmp/apt-lists -o Dir::Cache::archives=/tmp/apt-archives clean
+    rm -rf /tmp/apt-archives /tmp/apt-lists
 fi
 
 # Verify required tools exist before continuing
 required_cmds=(parted mkfs.ntfs mount rsync wimlib-imagex grub-install curl grep awk pgrep xargs)
 for cmd in "${required_cmds[@]}"; do
     if ! command_exists "$cmd"; then
-        echo "ERROR: required command '$cmd' is missing. Install it or free root space and rerun the script."
-        exit 1
-    fi
+        echo "ERROR: required command '$cmd' is missing."
+        echo "If the rescue environment is low on disk space, free space or provide the missing tool in the environment before rerunning the script."
 done
 
 disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
