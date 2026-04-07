@@ -856,8 +856,17 @@ verify_grub_entry() {
         exit 1
     fi
 
-    if ! grep -q 'menuentry "windows installer (BIOS)"' "$cfg_path"; then
+    local bios_entry_found=0
+    if grep -q 'menuentry "windows installer (BIOS)"' "$cfg_path"; then
+        bios_entry_found=1
+    elif grep -q 'menuentry "Windows installer"' "$cfg_path" && grep -q 'chainloader /bootmgr' "$cfg_path"; then
+        echo "INFO: Found existing BIOS Windows installer GRUB entry. Accepting existing standard entry."
+        bios_entry_found=1
+    fi
+
+    if [ "$bios_entry_found" -eq 0 ]; then
         echo "ERROR: BIOS GRUB entry is missing in $cfg_path"
+        echo "       Expected either menuentry \"windows installer (BIOS)\" or a Windows installer entry with chainloader /bootmgr."
         exit 1
     fi
 
