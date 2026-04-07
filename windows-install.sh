@@ -1,5 +1,12 @@
 #!/bin/bash
-set -euo pipefail
+
+# Ensure all /dev/sda partitions are unmounted and swap is off before partitioning
+echo "Deactivating swap and unmounting all /dev/sda partitions..."
+swapoff -a
+for part in $(lsblk -ln -o NAME | grep '^sda' | grep -v '^sda$'); do
+    umount /dev/$part 2>/dev/null || true
+done
+echo "All /dev/sda partitions unmounted and swap deactivated."
 
 # Default URL for Windows ISO
 DEFAULT_WINDOWS_ISO_URL="https://example.com/windows.iso"
@@ -23,11 +30,6 @@ if [ ! -f "/mnt/sources/boot.wim" ]; then
     read -p "Press any key to exit..." -n1 -s
     exit 1
 fi
-
-###############################################################################
-# VIRTIO DRIVERS ISO (keeps a default, but you can change it)
-###############################################################################
-echo "*** Virtio drivers ISO ***"
 
 # Default URL for VirtIO ISO
 DEFAULT_VIRTIO_ISO_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
@@ -53,50 +55,55 @@ if [ ! -d "/mnt/sources/virtio" ]; then
     exit 1
 fi
 
-cd /mnt/sources
+# Additional partitioning and GRUB setup from 'main'
+disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
+disk_size_mb=$((disk_size_gb * 1024))
+part_size_mb=$((disk_size_mb / 4))
 
-# Automate wimlib-imagex image index selection
-image_index=2  # Default to Microsoft Windows Setup (x64)
-echo "Using default image index: $image_index"
+parted /dev/sda --script -- mklabel gpt
+parted /dev/sda --script -- mkpart primary ntfs 1MB ${part_size_mb}MB
+parted /dev/sda --script -- mkpart primary ntfs ${part_size_mb}MB $((2 * part_size_mb))MB
 
-echo "*** Prepare cmd.txt for wimlib ***"
-echo 'add virtio /virtio_drivers' > cmd.txt
+partprobe /dev/sda
+sleep 30
+partprobe /dev/sda
+sleep 30
+partprobe /dev/sda
+sleep 30
 
-echo "*** List images in boot.wim ***"
-wimlib-imagex info boot.wim
+mkfs.ntfs -f /dev/sda1
+mkfs.ntfs -f /dev/sda2
+echo "NTFS partitions created"
+echo -e "r\ng\np\nw\nY\n" | gdisk /dev/sda
 
-echo "Please enter a valid image index from the list above (usually '2' = Microsoft Windows Setup (x64)):"
-read image_index
-echo "Selected image index: \$image_index"
+mount /dev/sda1 /mnt
+cd ~
+mkdir windisk
+mount /dev/sda2 windisk
+grub-install --root-directory=/mnt /dev/sda
+cd /mnt/boot/grub
+cat <<EOF > grub.cfg
+menuentry "windows installer" {
+    insmod ntfs
+    search --set=root --file=/bootmgr
+    ntldr /bootmgr
+    boot
+}
+EOF
 
-if [ -z "\$image_index" ]; then
-    echo "ERROR: No image index provided."
-    read -p "Press any key to exit..." -n1 -s
-    exit 1
-fi
-
-echo "*** Updating boot.wim with Virtio drivers ***"
-before_size=$(stat -c%s boot.wim)
-wimlib-imagex update boot.wim "$image_index" < cmd.txt
-after_size=$(stat -c%s boot.wim)
-echo "boot.wim size before: \$before_size bytes"
-echo "boot.wim size after : \$after_size bytes"
-echo "Update boot.wim finish ***"
-
+# Final checks and reboot prompt
 echo "*** Final checks ***"
 ls -lh /mnt/bootmgr /mnt/sources/boot.wim
 ls -lh /mnt/sources/virtio || true
 
 read -p "Optionally unmount /mnt and /root/windisk before reboot? (Y/N): " umount_choice
-if [[ "\$umount_choice" == "Y" || "\$umount_choice" == "y" ]]; then
+if [[ "$umount_choice" == "Y" || "$umount_choice" == "y" ]]; then
     umount /root/windisk || echo "Could not unmount /root/windisk (maybe already unmounted)."
     umount /mnt || echo "Could not unmount /mnt (maybe busy, will be handled on reboot)."
 fi
 
-echo "*** Reboot prompt ***"
 read -p "Do you want to reboot the system now? (Y/N): " reboot_choice
-
-if [[ "\$reboot_choice" == "Y" || "\$reboot_choice" == "y" ]]; then
+if [[ "$reboot_choice" == "Y" || "$reboot_choice" == "y" ]]; then
     echo "*** Rebooting the system... ***"
     reboot
 else
