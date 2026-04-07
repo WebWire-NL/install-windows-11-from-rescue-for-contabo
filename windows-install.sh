@@ -859,7 +859,7 @@ verify_grub_entry() {
     local bios_entry_found=0
     if grep -q 'menuentry "windows installer (BIOS)"' "$cfg_path"; then
         bios_entry_found=1
-    elif grep -q 'menuentry "Windows installer"' "$cfg_path" && grep -q -E 'chainloader /bootmgr|ntldr /bootmgr' "$cfg_path"; then
+    elif grep -qi 'menuentry "windows installer"' "$cfg_path" && grep -q -E 'chainloader /bootmgr|ntldr /bootmgr' "$cfg_path"; then
         echo "INFO: Found existing BIOS Windows installer GRUB entry. Accepting existing entry."
         bios_entry_found=1
     fi
@@ -1001,7 +1001,7 @@ write_grub_config() {
     fi
 
     cat > /mnt/boot/grub/grub.cfg <<'EOF'
-menuentry "windows installer (BIOS)" {
+menuentry "windows installer" {
     insmod ntfs
     search --no-floppy --set=root --file=/bootmgr
     ntldr /bootmgr
@@ -1034,7 +1034,7 @@ install_grub_if_needed() {
     echo "Installing or updating GRUB on /dev/sda..."
     mkdir -p /mnt/boot/grub
 
-    local grub_args=(--target="${GRUB_INSTALL_TARGET}" --boot-directory=/mnt/boot)
+    local grub_args=(--target="${GRUB_INSTALL_TARGET}" --root-directory=/mnt)
 
     if gpt_needs_blocklists; then
         echo "GPT without BIOS boot partition detected. Installing GRUB with --force blocklists."
