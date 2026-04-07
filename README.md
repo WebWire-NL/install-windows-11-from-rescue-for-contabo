@@ -42,7 +42,7 @@ Automated script and instructions to install Windows 11 on a Contabo VPS from th
 3. Make the script executable and run it:
    ```
    chmod +x windows-install.sh
-   ./windows-install.sh
+   bash install-windows-11-from-rescue-for-contabo/windows-install.sh
    ```
    If the rescue shell does not honor the script shebang or executable flag, run it explicitly with bash:
    ```
