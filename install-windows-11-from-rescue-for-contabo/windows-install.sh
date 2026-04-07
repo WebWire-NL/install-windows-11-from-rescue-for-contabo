@@ -89,6 +89,7 @@ if [ -e /dev/zram0 ]; then
     echo "Resetting existing zram device..."
     swapoff /dev/zram0 2>/dev/null || true
     echo 1 > /sys/block/zram0/reset
+    echo "Existing zram device reset."
 fi
 
 if [ "$TOTAL_ISO_SIZE_MB" -le "$AVAILABLE_RAM_MB" ]; then
@@ -116,6 +117,13 @@ if [ -e /sys/block/zram0/disksize ]; then
     echo "zram size: $(cat /sys/block/zram0/disksize)"
 else
     echo "zram not created."
+fi
+
+# Ensure download happens to the correct location
+if [ "$WINDOWS_ISO" = "/mnt/zram0/windisk/Windows.iso" ]; then
+    echo "Downloading Windows ISO to zram..."
+else
+    echo "Downloading Windows ISO to local storage..."
 fi
 
 # Download the ISOs
