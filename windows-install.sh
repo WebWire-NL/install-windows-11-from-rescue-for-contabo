@@ -900,6 +900,26 @@ verify_grub_installation() {
     echo "GRUB installation artifacts verified: $core_img"
 }
 
+verify_grub_probe() {
+    if ! command_exists grub-probe; then
+        echo "WARNING: grub-probe unavailable; skipping GRUB probe validation."
+        return 0
+    fi
+
+    if ! grub-probe --target=fs /mnt >/dev/null 2>&1; then
+        echo "ERROR: grub-probe could not identify the filesystem mounted on /mnt."
+        echo "       Please ensure /mnt is mounted with the Windows installer partition."
+        exit 1
+    fi
+
+    if ! grub-probe --target=device /mnt >/dev/null 2>&1; then
+        echo "ERROR: grub-probe could not identify the block device for /mnt."
+        exit 1
+    fi
+
+    echo "GRUB probe validation passed."
+}
+
 run_preflight_checks() {
     echo "*** Step: preflight check-only validation ***"
     verify_vps_compatibility
@@ -995,6 +1015,7 @@ install_grub_if_needed() {
     fi
 
     verify_grub_installation
+    verify_grub_probe
     write_grub_config
     verify_grub_entry
     checkpoint_set "grub_installed"
