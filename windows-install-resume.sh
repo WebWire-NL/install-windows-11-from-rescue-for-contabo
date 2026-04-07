@@ -1,0 +1,406 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resume Windows install preparation after a partial run.
+# This script detects completed checkpoints and skips steps already done.
+
+DEFAULT_WINDOWS_ISO_URL="https://bit.ly/3UGzNcB"
+DEFAULT_VIRTIO_ISO_URL="https://bit.ly/4d1g7Ht"
+
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+prompt_url() {
+    local default="$1"
+    local prompt="$2"
+    local value
+    read -r -p "$prompt" value
+    echo "${value:-$default}"
+}
+
+get_content_length() {
+    local url="$1"
+    curl -fsI "$url" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r'
+}
+
+download_file() {
+    local url="$1"
+    local output="$2"
+    local session="${output}.aria2"
+    local log="${output}.aria2.log"
+    local ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    local dir
+    local base
+    dir="$(dirname "$output")"
+    base="$(basename "$output")"
+
+    if command_exists aria2c; then
+        if pgrep -f "aria2c .*--dir=$dir .*--out=$base" >/dev/null 2>&1; then
+            echo "Stopping stale aria2c process for $output"
+            pgrep -f "aria2c .*--dir=$dir .*--out=$base" | xargs -r kill
+        fi
+
+        echo "Downloading $output with aria2c (resume support)"
+        set +e
+        aria2c --continue=true --file-allocation=none --enable-http-keep-alive=true \
+            --enable-http2=true --max-connection-per-server=64 --split=64 --min-split-size=4M \
+            --max-tries=0 --retry-wait=15 --timeout=60 --retry-connrefused=true \
+            --download-result=full --user-agent="$ua" \
+            -d "$dir" -o "$base" --input-file="$session" "$url" >"$log" 2>&1
+        local aria2_rc=$?
+        set -e
+
+        if [ "$aria2_rc" -ne 0 ]; then
+            echo "WARNING: aria2c failed with exit code $aria2_rc. Falling back to curl."
+            if command_exists curl; then
+                curl --http2 --compressed --retry 5 --retry-delay 10 --retry-connrefused \
+                    --location --continue-at - --user-agent "$ua" --output "$output" "$url"
+            else
+                echo "WARNING: curl not available. Falling back to wget."
+                wget --tries=0 --waitretry=5 --retry-connrefused --continue --timeout=60 \
+                    --user-agent="$ua" -O "$output" "$url"
+            fi
+        fi
+    else
+        echo "aria2c not available, downloading $output with wget"
+        wget --tries=5 --waitretry=5 --retry-connrefused --continue --timeout=60 \
+            --user-agent="$ua" -O "$output" "$url"
+    fi
+}
+
+ensure_toolchain() {
+    local required=(parted mkfs.ntfs mkfs.ext4 mount rsync wimlib-imagex grub-install curl grep awk pgrep xargs dpkg-deb modprobe partprobe blockdev partx kpartx)
+    for cmd in "${required[@]}"; do
+        if ! command_exists "$cmd"; then
+            echo "ERROR: required command '$cmd' is missing."
+            exit 1
+        fi
+    done
+}
+
+cleanup_partition_state() {
+    echo "Cleaning up stale /dev/sda state..."
+    umount /mnt 2>/dev/null || true
+    umount /root/windisk 2>/dev/null || true
+    if command_exists partprobe; then
+        partprobe /dev/sda >/dev/null 2>&1 || true
+    fi
+    if command_exists blockdev; then
+        blockdev --rereadpt /dev/sda >/dev/null 2>&1 || true
+    fi
+    if command_exists partx; then
+        partx -u /dev/sda >/dev/null 2>&1 || true
+    fi
+    if command_exists kpartx; then
+        kpartx -d /dev/sda >/dev/null 2>&1 || true
+    fi
+    sleep 2
+}
+
+setup_partitions_and_mounts() {
+    mkdir -p /mnt /root/windisk
+
+    if mountpoint -q /mnt; then
+        echo "/mnt already mounted"
+    else
+        mount /dev/sda1 /mnt 2>/dev/null || true
+    fi
+    if mountpoint -q /root/windisk; then
+        echo "/root/windisk already mounted"
+    else
+        mount /dev/sda2 /root/windisk 2>/dev/null || true
+    fi
+
+    if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
+        echo "Existing Windows installer files detected on /mnt. Skipping partition recreation."
+        return
+    fi
+
+    echo "Creating disk partitions..."
+    if mountpoint -q /mnt; then
+        umount /mnt || true
+    fi
+    if mountpoint -q /root/windisk; then
+        umount /root/windisk || true
+    fi
+
+    if [ -e /dev/sda1 ] || [ -e /dev/sda2 ]; then
+        cleanup_partition_state
+    fi
+
+    disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
+    disk_size_mb=$((disk_size_gb * 1024))
+    part_size_mb=$((disk_size_mb / 2))
+
+    if command_exists sgdisk; then
+        echo "Wiping existing partition table on /dev/sda..."
+        sgdisk --zap-all /dev/sda || true
+    fi
+    if command_exists wipefs; then
+        echo "Wiping filesystem signatures on /dev/sda..."
+        wipefs -a /dev/sda || true
+    fi
+    cleanup_partition_state
+
+    parted /dev/sda --script -- mklabel gpt
+    parted /dev/sda --script -- mkpart primary ntfs 1MB ${part_size_mb}MB
+    parted /dev/sda --script -- mkpart primary ntfs ${part_size_mb}MB 100%
+    partprobe /dev/sda
+    sleep 5
+
+    mkfs.ntfs -f /dev/sda1
+    mkfs.ntfs -f /dev/sda2
+
+    partprobe /dev/sda
+    sleep 3
+
+    mount /dev/sda1 /mnt
+    mount /dev/sda2 /root/windisk
+}
+
+setup_download_environment() {
+    WINDOWS_ISO_URL=$(prompt_url "$DEFAULT_WINDOWS_ISO_URL" "Enter the URL for Windows.iso (leave blank to use default): ")
+    VIRTIO_ISO_URL=$(prompt_url "$DEFAULT_VIRTIO_ISO_URL" "Enter the URL for Virtio.iso (leave blank to use default): ")
+
+    WINDOWS_ISO_SIZE=$(get_content_length "$WINDOWS_ISO_URL")
+    VIRTIO_ISO_SIZE=$(get_content_length "$VIRTIO_ISO_URL")
+    if [ -z "$WINDOWS_ISO_SIZE" ] || [ -z "$VIRTIO_ISO_SIZE" ]; then
+        echo "ERROR: Unable to determine ISO sizes from HTTP headers."
+        exit 1
+    fi
+
+    TOTAL_ISO_SIZE=$((WINDOWS_ISO_SIZE + VIRTIO_ISO_SIZE))
+    ZRAM_SIZE_MARGIN_MB=1024
+    TOTAL_ISO_SIZE_MB=$((TOTAL_ISO_SIZE / 1024 / 1024 + ZRAM_SIZE_MARGIN_MB))
+
+    if [ -d /mnt/zram0/windisk ]; then
+        USE_ZRAM=1
+        WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
+        VIRTIO_ISO="/mnt/zram0/windisk/VirtIO.iso"
+    else
+        AVAILABLE_RAM_MB=0
+        if command_exists free; then
+            AVAILABLE_RAM_MB=$(free -m | awk '/^Mem:/ {print $7}')
+        fi
+        SAFE_RAM_MB=$((AVAILABLE_RAM_MB - 512))
+        if [ "$SAFE_RAM_MB" -lt 0 ]; then
+            SAFE_RAM_MB=0
+        fi
+
+        echo "Detected available RAM: ${AVAILABLE_RAM_MB}MB"
+        echo "Reserving 512MB; safe RAM for zram: ${SAFE_RAM_MB}MB"
+        echo "Estimated ISO download size: $((TOTAL_ISO_SIZE / 1024 / 1024))MB"
+        echo "Allocating zram with buffer: ${TOTAL_ISO_SIZE_MB}MB"
+
+        if [ "$TOTAL_ISO_SIZE_MB" -le "$SAFE_RAM_MB" ]; then
+            echo "Creating zram of size ${TOTAL_ISO_SIZE_MB}MB..."
+            if mountpoint -q /mnt/zram0 2>/dev/null; then
+                umount /mnt/zram0 || true
+            fi
+            if [ -e /dev/zram0 ]; then
+                swapoff /dev/zram0 2>/dev/null || true
+                echo 1 > /sys/block/zram0/reset 2>/dev/null || true
+            fi
+            modprobe zram >/dev/null 2>&1 || true
+            echo lz4 > /sys/block/zram0/comp_algorithm
+            echo "${TOTAL_ISO_SIZE_MB}M" > /sys/block/zram0/disksize
+            zram_disksize=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)
+            if [ "$zram_disksize" -eq 0 ]; then
+                echo "WARNING: zram disksize remained 0 after initialization. Falling back to disk."
+                USE_ZRAM=0
+            elif mkfs.ext4 -q /dev/zram0 && mkdir -p /mnt/zram0 && mount /dev/zram0 /mnt/zram0; then
+                USE_ZRAM=1
+                echo "zram mounted at /mnt/zram0."
+            else
+                echo "WARNING: zram format or mount failed. Falling back to disk."
+                USE_ZRAM=0
+            fi
+        else
+            echo "WARNING: Insufficient RAM for zram; using disk fallback."
+            USE_ZRAM=0
+        fi
+        if [ "$USE_ZRAM" -eq 1 ]; then
+            mkdir -p /mnt/zram0/windisk
+            WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
+            VIRTIO_ISO="/mnt/zram0/windisk/VirtIO.iso"
+        else
+            mkdir -p /root/windisk
+            WINDOWS_ISO="/root/windisk/Windows.iso"
+            VIRTIO_ISO="/root/windisk/VirtIO.iso"
+
+            REQUIRED_DISK_BYTES=$((TOTAL_ISO_SIZE + TOTAL_ISO_SIZE / 5))
+            DOWNLOAD_DIR="/root/windisk"
+            DOWNLOAD_AVAIL=$(df --output=avail "$DOWNLOAD_DIR" | tail -n 1)
+            DOWNLOAD_AVAIL_BYTES=$((DOWNLOAD_AVAIL * 1024))
+            if [ "$DOWNLOAD_AVAIL_BYTES" -lt "$REQUIRED_DISK_BYTES" ]; then
+                echo "ERROR: Not enough disk space on $DOWNLOAD_DIR for ISO downloads."
+                exit 1
+            fi
+        fi
+    fi
+}
+
+verify_file_size() {
+    local path="$1"
+    local expected="$2"
+    if [ -f "$path" ]; then
+        local actual
+        actual=$(stat -c%s "$path")
+        [ "$actual" -eq "$expected" ]
+    else
+        return 1
+    fi
+}
+
+download_if_needed() {
+    local url="$1"
+    local path="$2"
+    local expected="$3"
+
+    if verify_file_size "$path" "$expected"; then
+        echo "$path already exists and matches expected size. Skipping download."
+        return
+    fi
+
+    echo "Downloading $path..."
+    download_file "$url" "$path"
+
+    if ! verify_file_size "$path" "$expected"; then
+        echo "ERROR: Downloaded file size does not match expected size for $path"
+        exit 1
+    fi
+}
+
+copy_windows_media() {
+    if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
+        echo "Windows installer files already present on /mnt. Skipping Windows ISO extraction."
+        return
+    fi
+    echo "Extracting Windows ISO to /mnt..."
+    WINFILE_MOUNT=$(mktemp -d)
+    mount -o loop "$WINDOWS_ISO" "$WINFILE_MOUNT"
+    rsync -avz --progress "$WINFILE_MOUNT"/* /mnt/
+    umount "$WINFILE_MOUNT"
+    rmdir "$WINFILE_MOUNT"
+}
+
+copy_virtio_media() {
+    if [ -d /mnt/sources/virtio ] && [ -f /mnt/sources/virtio/NetKVM/2k3/amd64/netkvm.sys ]; then
+        echo "VirtIO drivers already copied to /mnt/sources/virtio. Skipping VirtIO ISO extraction."
+        return
+    fi
+    echo "Extracting VirtIO ISO to /mnt/sources/virtio..."
+    ISO_MOUNT_DIR=$(mktemp -d)
+    mount -o loop "$VIRTIO_ISO" "$ISO_MOUNT_DIR"
+    mkdir -p /mnt/sources/virtio
+    rsync -avz --progress "$ISO_MOUNT_DIR"/ /mnt/sources/virtio/
+    umount "$ISO_MOUNT_DIR"
+    rmdir "$ISO_MOUNT_DIR"
+}
+
+write_bypass_files() {
+    if [ -f /mnt/sources/bypass.reg ] && [ -f /mnt/sources/bypass.cmd ]; then
+        echo "Bypass files already exist. Skipping creation."
+        return
+    fi
+    cat <<'EOF' > /mnt/sources/bypass.reg
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\SYSTEM\Setup\LabConfig]
+"BypassTPMCheck"=dword:00000001
+"BypassSecureBootCheck"=dword:00000001
+"BypassRAMCheck"=dword:00000001
+"BypassCPUCheck"=dword:00000001
+"BypassStorageCheck"=dword:00000001
+EOF
+
+    cat <<'EOF' > /mnt/sources/bypass.cmd
+@echo off
+regedit /s "%~dp0bypass.reg"
+EOF
+}
+
+patch_boot_wim() {
+    if [ -f /mnt/sources/boot.wim.virtio_patched ]; then
+        echo "boot.wim already patched with VirtIO drivers. Skipping WIM update."
+        return
+    fi
+    if [ ! -f /mnt/sources/boot.wim ]; then
+        echo "ERROR: /mnt/sources/boot.wim not found."
+        exit 1
+    fi
+    echo "Inspecting boot.wim images..."
+    wimlib-imagex info /mnt/sources/boot.wim > /tmp/bootwim_info.txt
+    auto_image_index=$(awk '
+        /Index:/ { idx=$2 }
+        /Name:/ {
+            if ($0 ~ /Windows Setup/ || $0 ~ /Microsoft Windows Setup/ || $0 ~ /Setup \(amd64\)/) {
+                print idx
+                found=1
+                exit
+            }
+            if ($0 ~ /Windows PE/ && fallback_idx == "") {
+                fallback_idx = idx
+            }
+        }
+        END {
+            if (found) exit
+            if (fallback_idx != "") {
+                print fallback_idx
+            } else if (idx != "") {
+                print idx
+            }
+        }
+    ' /tmp/bootwim_info.txt)
+    rm -f /tmp/bootwim_info.txt
+
+    if [ -z "$auto_image_index" ]; then
+        echo "ERROR: Unable to determine boot.wim image index."
+        exit 1
+    fi
+
+    echo "Auto-selected boot.wim image index: $auto_image_index"
+    echo "add /mnt/sources/virtio /virtio_drivers" > /tmp/wimcmd.txt
+    wimlib-imagex update /mnt/sources/boot.wim "$auto_image_index" < /tmp/wimcmd.txt
+    rm -f /tmp/wimcmd.txt
+    touch /mnt/sources/boot.wim.virtio_patched
+}
+
+install_grub_if_needed() {
+    if [ -f /mnt/boot/grub/grub.cfg ] && grep -q "ntldr /bootmgr" /mnt/boot/grub/grub.cfg 2>/dev/null; then
+        echo "GRUB boot entry already installed. Skipping grub-install."
+        return
+    fi
+    echo "Installing GRUB to /dev/sda..."
+    mkdir -p /mnt/boot/grub
+    grub-install --root-directory=/mnt /dev/sda
+    cat > /mnt/boot/grub/grub.cfg <<'EOF'
+menuentry "windows installer" {
+    insmod ntfs
+    search --set=root --file=/bootmgr
+    ntldr /bootmgr
+    boot
+}
+EOF
+}
+
+main() {
+    ensure_toolchain
+    setup_partitions_and_mounts
+    setup_download_environment
+    download_if_needed "$WINDOWS_ISO_URL" "$WINDOWS_ISO" "$WINDOWS_ISO_SIZE"
+    download_if_needed "$VIRTIO_ISO_URL" "$VIRTIO_ISO" "$VIRTIO_ISO_SIZE"
+    copy_windows_media
+    copy_virtio_media
+    write_bypass_files
+    patch_boot_wim
+    install_grub_if_needed
+
+    echo "*** Final checks ***"
+    ls -lh /mnt/bootmgr /mnt/sources/boot.wim || true
+    ls -lh /mnt/sources/virtio || true
+    echo "Resume script completed. You can reboot manually when ready."
+}
+
+main "$@"
