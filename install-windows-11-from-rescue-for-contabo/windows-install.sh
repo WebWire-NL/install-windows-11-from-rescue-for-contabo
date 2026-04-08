@@ -158,8 +158,22 @@ else
     ROOT_AVAIL=$(df --output=avail / | tail -n 1)
     ROOT_AVAIL_BYTES=$((ROOT_AVAIL * 1024))
     if [ "$ROOT_AVAIL_BYTES" -lt "$REQUIRED_DISK_BYTES" ]; then
-        echo "ERROR: Not enough disk space on / for ISO downloads ($ROOT_AVAIL_BYTES bytes available, $REQUIRED_DISK_BYTES needed)."
-        exit 1
+        if mountpoint -q /mnt 2>/dev/null; then
+            MNT_AVAIL=$(df --output=avail /mnt | tail -n 1)
+            MNT_AVAIL_BYTES=$((MNT_AVAIL * 1024))
+            if [ "$MNT_AVAIL_BYTES" -ge "$REQUIRED_DISK_BYTES" ]; then
+                echo "Using /mnt for ISO downloads because / has insufficient space."
+                mkdir -p /mnt/windisk
+                WINDOWS_ISO="/mnt/windisk/Windows.iso"
+                VIRTIO_ISO="/mnt/windisk/VirtIO.iso"
+            else
+                echo "ERROR: Not enough disk space on / or /mnt for ISO downloads ($ROOT_AVAIL_BYTES bytes on /, $MNT_AVAIL_BYTES bytes on /mnt; $REQUIRED_DISK_BYTES needed)."
+                exit 1
+            fi
+        else
+            echo "ERROR: Not enough disk space on / for ISO downloads ($ROOT_AVAIL_BYTES bytes available, $REQUIRED_DISK_BYTES needed) and /mnt is not mounted."
+            exit 1
+        fi
     fi
 fi
 
@@ -186,10 +200,18 @@ if mountpoint -q /mnt/zram0; then
         CLONE_DIR="/mnt/zram0/install-windows-11-from-rescue-for-contabo"
     fi
 fi
-
-# Free up space for the clone target only
-echo "Freeing up clone directory if present..."
-rm -rf "$CLONE_DIR" || true
+    if [ -f "$output" ] && [ "$FORCE_DOWNLOAD" -eq 0 ]; then
+        local existing_size
+        existing_size=$(stat -c%s "$output" 2>/dev/null || echo 0)
+        if [ "$existing_size" -gt 0 ] && [ "$existing_size" -lt $((10 * 1024 * 1024)) ]; then
+            echo "Existing file $output is too small ($existing_size bytes); removing and redownloading."
+            rm -f "$output"
+        fi
+        if [ -f "$output" ]; then
+            echo "Using existing file: $output"
+            return
+        fi
+    fi
 
 # Clone the repository
 if ! command -v git &> /dev/null; then
@@ -228,9 +250,14 @@ partprobe /dev/sda
 sleep 30
 partprobe /dev/sda
 sleep 30
-partprobe /dev/sda
-sleep 30
+    local download_dir="$MNT_STORAGE"
+    if mountpoint -q "$MNT_STORAGE" 2>/dev/null; then
+        download_dir="${MNT_STORAGE}-download"
+    fi
+    mkdir -p "$download_dir"
 
+    local windows_iso="$download_dir/Windows.iso"
+    local virtio_iso="$download_dir/VirtIO.iso"
 mkfs.ntfs -f /dev/sda1
 mkfs.ntfs -f /dev/sda2
 echo "NTFS partitions created"
