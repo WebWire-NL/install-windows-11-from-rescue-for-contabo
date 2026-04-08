@@ -348,12 +348,20 @@ verify_installer_files() {
     local errors=0
 
     if [ ! -f /mnt/bootmgr ]; then
-        echo "ERROR: /mnt/bootmgr is missing. The Windows installer entry cannot boot."
-        errors=1
+        if [ "$CHECK_ONLY" -eq 1 ]; then
+            echo "WARNING: /mnt/bootmgr is missing. The Windows installer entry is not yet prepared."
+        else
+            echo "ERROR: /mnt/bootmgr is missing. The Windows installer entry cannot boot."
+            errors=1
+        fi
     fi
     if [ ! -f /mnt/sources/boot.wim ]; then
-        echo "ERROR: /mnt/sources/boot.wim is missing. The installer payload is incomplete."
-        errors=1
+        if [ "$CHECK_ONLY" -eq 1 ]; then
+            echo "WARNING: /mnt/sources/boot.wim is missing. The installer payload is not yet prepared."
+        else
+            echo "ERROR: /mnt/sources/boot.wim is missing. The installer payload is incomplete."
+            errors=1
+        fi
     fi
     if [ ! -d /mnt/sources/virtio ]; then
         echo "WARNING: /mnt/sources/virtio is missing. VirtIO drivers may not be available during install."
@@ -418,8 +426,12 @@ manual_rescue_verification() {
     if mountpoint -q /mnt; then
         echo "- /mnt is mounted"
     else
-        echo "ERROR: /mnt is not mounted"
-        failed=1
+        if [ "$CHECK_ONLY" -eq 1 ]; then
+            echo "WARNING: /mnt is not mounted. This is expected for a fresh installer state."
+        else
+            echo "ERROR: /mnt is not mounted"
+            failed=1
+        fi
     fi
     if mountpoint -q /root/windisk; then
         echo "- /root/windisk is mounted"
@@ -430,14 +442,22 @@ manual_rescue_verification() {
     if [ -f /mnt/bootmgr ]; then
         echo "- /mnt/bootmgr is present"
     else
-        echo "ERROR: /mnt/bootmgr is missing"
-        failed=1
+        if [ "$CHECK_ONLY" -eq 1 ]; then
+            echo "WARNING: /mnt/bootmgr is missing"
+        else
+            echo "ERROR: /mnt/bootmgr is missing"
+            failed=1
+        fi
     fi
     if [ -f /mnt/sources/boot.wim ]; then
         echo "- /mnt/sources/boot.wim is present"
     else
-        echo "ERROR: /mnt/sources/boot.wim is missing"
-        failed=1
+        if [ "$CHECK_ONLY" -eq 1 ]; then
+            echo "WARNING: /mnt/sources/boot.wim is missing"
+        else
+            echo "ERROR: /mnt/sources/boot.wim is missing"
+            failed=1
+        fi
     fi
     if [ -d /mnt/sources/virtio ]; then
         echo "- /mnt/sources/virtio is present"
@@ -449,8 +469,12 @@ manual_rescue_verification() {
         echo "- /mnt/boot/grub/grub.cfg is present"
         check_grub_config_noexit || failed=1
     else
-        echo "ERROR: /mnt/boot/grub/grub.cfg is missing"
-        failed=1
+        if [ "$CHECK_ONLY" -eq 1 ]; then
+            echo "WARNING: /mnt/boot/grub/grub.cfg is missing"
+        else
+            echo "ERROR: /mnt/boot/grub/grub.cfg is missing"
+            failed=1
+        fi
     fi
 
     if verify_grub_installation_noexit >/dev/null 2>&1; then
