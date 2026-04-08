@@ -187,8 +187,17 @@ download_file() {
     local output="$2"
 
     if [ -f "$output" ] && [ "$FORCE_DOWNLOAD" -eq 0 ]; then
-        echo "Using existing file: $output"
-        return
+        local existing_size
+        existing_size=$(stat -c%s "$output" 2>/dev/null || echo 0)
+        if [ "$existing_size" -gt 0 ] && [ "$existing_size" -lt $((10 * 1024 * 1024)) ]; then
+            echo "Existing file $output is too small ($existing_size bytes); removing and redownloading."
+            rm -f "$output"
+        fi
+        if [ -f "$output" ]; then
+            echo "Using existing file: $output"
+            return
+        fi
+    fi
     fi
 
     echo "Downloading $(basename "$output") ..."
@@ -229,8 +238,14 @@ copy_virtio_media() {
 }
 
 prepare_windows_media() {
-    local windows_iso="$MNT_STORAGE/Windows.iso"
-    local virtio_iso="$MNT_STORAGE/VirtIO.iso"
+    local download_dir="$MNT_STORAGE"
+    if mountpoint -q "$MNT_STORAGE" 2>/dev/null; then
+        download_dir="${MNT_STORAGE}-download"
+    fi
+    mkdir -p "$download_dir"
+
+    local windows_iso="$download_dir/Windows.iso"
+    local virtio_iso="$download_dir/VirtIO.iso"
 
     WINDOWS_ISO_URL="$(prompt_value "$WINDOWS_ISO_URL" "Enter Windows ISO URL: ")"
     VIRTIO_ISO_URL="$(prompt_value "$VIRTIO_ISO_URL" "Enter VirtIO ISO URL [default]: ")"
