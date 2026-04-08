@@ -114,6 +114,7 @@ USE_ZRAM=0
 NO_PROMPT=0
 WINDOWS_ISO_URL_ARG=""
 VIRTIO_ISO_URL_ARG=""
+ORIGINAL_ARGS=("$@")
 PARSED_ARGS=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -167,7 +168,7 @@ while [ "$#" -gt 0 ]; do
  done
 set -- "${PARSED_ARGS[@]}"
 
-self_update_script "$@"
+self_update_script "${ORIGINAL_ARGS[@]}"
 
 DEFAULT_WINDOWS_ISO_URL=""
 DEFAULT_VIRTIO_ISO_URL="https://bit.ly/4d1g7Ht"
