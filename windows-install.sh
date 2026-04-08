@@ -198,7 +198,6 @@ download_file() {
             return
         fi
     fi
-    fi
 
     echo "Downloading $(basename "$output") ..."
     curl -fL --retry 5 --retry-delay 5 --continue-at - -o "$output" "$url"
