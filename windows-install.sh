@@ -544,10 +544,14 @@ get_disk_label() {
         return
     fi
 
-    local label
-    if ! label=$(parted /dev/sda --script print 2>/dev/null | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]'); then
-        label=""
+    local disk_output
+    if ! disk_output=$(parted /dev/sda --script print 2>/dev/null); then
+        echo "unknown"
+        return
     fi
+
+    local label
+    label=$(printf '%s\n' "$disk_output" | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')
 
     if [ -z "$label" ]; then
         echo "unknown"
