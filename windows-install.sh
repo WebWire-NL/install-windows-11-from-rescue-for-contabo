@@ -508,7 +508,15 @@ EOF
 }
 
 patch_boot_wim() {
-    [ -f "$MNT_INSTALL/sources/boot.wim" ] || { echo "ERROR: boot.wim not found."; exit 1; }
+    if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
+        echo "WARNING: $MNT_INSTALL/sources/boot.wim not found. Attempting to recover installer media."
+        mount_existing_partitions
+        if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
+            prepare_windows_media
+        fi
+    fi
+
+    [ -f "$MNT_INSTALL/sources/boot.wim" ] || { echo "ERROR: boot.wim not found after recovery attempt."; exit 1; }
 
     echo "Inspecting boot.wim images..."
     wimlib-imagex info "$MNT_INSTALL/sources/boot.wim" > /tmp/bootwim_info.txt
