@@ -30,10 +30,10 @@ Automated script and instructions to install Windows 11 on a Contabo VPS from th
    ```
 
 ### 3. Download and Run the Script
-1. Update package metadata and install git if needed:
+1. Update package metadata and install git and required packages if needed:
    ```
    apt update -y
-   apt install git -y
+   apt install git wimtools -y
    ```
 2. Clone this repository:
    ```
