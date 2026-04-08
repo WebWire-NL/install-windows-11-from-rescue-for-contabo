@@ -71,8 +71,11 @@ if [ ! -f "$SWAPFILE" ]; then
     fallocate -l 1G "$SWAPFILE"
     chmod 600 "$SWAPFILE"
     mkswap "$SWAPFILE"
-    swapon "$SWAPFILE"
-    echo "Temporary swap file created and activated."
+    if ! swapon "$SWAPFILE"; then
+        echo "WARNING: swapon failed; continuing without swap."
+    else
+        echo "Temporary swap file created and activated."
+    fi
 fi
 
 # Optimize aria2 download settings for VPS resources
@@ -83,10 +86,16 @@ retry_download() {
     aria2c $ARIA2_OPTS -o "$output" "$url"
 }
 
-# Prompt user for VirtIO ISO URL or use default
+# Default VirtIO ISO URL
 DEFAULT_VIRTIO_ISO_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
-read -p "Enter the URL for Virtio.iso (leave blank to use default): " virtio_url
-virtio_url=${virtio_url:-$DEFAULT_VIRTIO_ISO_URL}
+if [[ -z "$VIRTIO_ISO_URL" ]]; then
+    if [[ "$NO_PROMPT" -eq 0 ]]; then
+        read -p "Enter the URL for Virtio.iso (leave blank to use default): " virtio_url
+        VIRTIO_ISO_URL="${virtio_url:-$DEFAULT_VIRTIO_ISO_URL}"
+    else
+        VIRTIO_ISO_URL="$DEFAULT_VIRTIO_ISO_URL"
+    fi
+fi
 
 WINDOWS_ISO_URL="$ISO_URL"
 VIRTIO_ISO_URL="$VIRTIO_ISO_URL"
