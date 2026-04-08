@@ -18,36 +18,20 @@ RECREATE_DISK=0
 CHECK_ONLY=0
 FORCE_DOWNLOAD=0
 NO_PROMPT=0
+UNATTENDED=1
 WINDOWS_ISO_URL=""
 VIRTIO_ISO_URL=""
+UNATTENDED_CMD="${UNATTENDED_CMD:-}"
+
+WINDOWS_EDITION="${WINDOWS_EDITION:-Windows 11 Pro}"
+WINDOWS_GENERIC_KEY="${WINDOWS_GENERIC_KEY:-VK7JG-NPHTM-C97JM-9MPGT-3V66T}"
+WINDOWS_LOCALE="${WINDOWS_LOCALE:-en-US}"
+WINDOWS_TIMEZONE="${WINDOWS_TIMEZONE:-UTC}"
+WINDOWS_USERNAME="${WINDOWS_USERNAME:-Administrator}"
+WINDOWS_PASSWORD="${WINDOWS_PASSWORD:-ChangeMeNow!123}"
 
 checkpoint_done() { [ -f "$STATE_DIR/$1" ]; }
 checkpoint_set() { touch "$STATE_DIR/$1"; }
-command_exists() { command -v "$1" >/dev/null 2>&1; }
-
-package_for_command() {
-    case "$1" in
-        mkfs.ntfs) echo ntfs-3g ;;
-        mkfs.ext4) echo e2fsprogs ;;
-        grub-install) echo grub-pc ;;
-        grub-probe) echo grub-pc ;;
-        curl) echo curl ;;
-        rsync) echo rsync ;;
-        pgrep) echo procps ;;
-        awk) echo gawk ;;
-        xargs) echo findutils ;;
-        grep) echo grep ;;
-        mount|blockdev|partx|fdisk) echo util-linux ;;
-        dpkg-deb) echo dpkg ;;
-        modprobe) echo kmod ;;
-        partprobe|parted) echo parted ;;
-        wimlib-imagex) echo wimtools ;;
-        aria2c) echo aria2 ;;
-        wget) echo wget ;;
-        *) echo "" ;;
-    esac
-}
-
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 require_root() {
@@ -76,20 +60,37 @@ parse_args() {
             --check-only) CHECK_ONLY=1 ;;
             --force-download) FORCE_DOWNLOAD=1 ;;
             --no-prompt) NO_PROMPT=1 ;;
+            --unattended) UNATTENDED=1 ;;
+            --unattended-cmd=*) UNATTENDED_CMD="${1#*=}" ;;
             --windows-iso-url=*) WINDOWS_ISO_URL="${1#*=}" ;;
             --virtio-iso-url=*) VIRTIO_ISO_URL="${1#*=}" ;;
+            --windows-edition=*) WINDOWS_EDITION="${1#*=}" ;;
+            --windows-generic-key=*) WINDOWS_GENERIC_KEY="${1#*=}" ;;
+            --windows-locale=*) WINDOWS_LOCALE="${1#*=}" ;;
+            --windows-timezone=*) WINDOWS_TIMEZONE="${1#*=}" ;;
+            --windows-username=*) WINDOWS_USERNAME="${1#*=}" ;;
+            --windows-password=*) WINDOWS_PASSWORD="${1#*=}" ;;
+            --unattended-cmd)
+                shift; UNATTENDED_CMD="${1:-}" ;;
             --windows-iso-url)
-                shift
-                WINDOWS_ISO_URL="${1:-}"
-                ;;
+                shift; WINDOWS_ISO_URL="${1:-}" ;;
             --virtio-iso-url)
-                shift
-                VIRTIO_ISO_URL="${1:-}"
-                ;;
+                shift; VIRTIO_ISO_URL="${1:-}" ;;
+            --windows-edition)
+                shift; WINDOWS_EDITION="${1:-}" ;;
+            --windows-generic-key)
+                shift; WINDOWS_GENERIC_KEY="${1:-}" ;;
+            --windows-locale)
+                shift; WINDOWS_LOCALE="${1:-}" ;;
+            --windows-timezone)
+                shift; WINDOWS_TIMEZONE="${1:-}" ;;
+            --windows-username)
+                shift; WINDOWS_USERNAME="${1:-}" ;;
+            --windows-password)
+                shift; WINDOWS_PASSWORD="${1:-}" ;;
             *)
                 echo "ERROR: Unknown argument: $1"
-                exit 1
-                ;;
+                exit 1 ;;
         esac
         shift
     done
@@ -98,7 +99,7 @@ parse_args() {
 ensure_toolchain() {
     local required=(
         parted partprobe mkfs.ntfs mount umount rsync
-\ \ \ \ \ \ \ \ grub-install\ grub-probe\ curl\ grep\ awk\ sed\ find\ wimlib-imagex wimlib-imagex
+        grub-install grub-probe curl grep awk sed find wimlib-imagex iconv
     )
     local missing=()
     for cmd in "${required[@]}"; do
@@ -106,7 +107,6 @@ ensure_toolchain() {
     done
     if [ "${#missing[@]}" -gt 0 ]; then
         echo "ERROR: Missing required commands: ${missing[*]}"
-        echo "Install them first in rescue mode."
         exit 1
     fi
 }
@@ -190,7 +190,6 @@ download_file() {
         local existing_size
         existing_size=$(stat -c%s "$output" 2>/dev/null || echo 0)
         if [ "$existing_size" -gt 0 ] && [ "$existing_size" -lt $((10 * 1024 * 1024)) ]; then
-            echo "Existing file $output is too small ($existing_size bytes); removing and redownloading."
             rm -f "$output"
         fi
         if [ -f "$output" ]; then
@@ -236,10 +235,18 @@ copy_virtio_media() {
     checkpoint_set virtio_extracted
 }
 
+xml_escape() {
+    sed -e 's/&/\&amp;/g' \
+        -e 's/</\&lt;/g' \
+        -e 's/>/\&gt;/g' \
+        -e "s/'/\&apos;/g" \
+        -e 's/"/\&quot;/g'
+}
+
 prepare_windows_media() {
     local download_dir="$MNT_STORAGE"
     if ! mountpoint -q "$MNT_STORAGE" 2>/dev/null; then
-        echo "ERROR: $MNT_STORAGE is not mounted. ISO downloads must target the mounted second partition."
+        echo "ERROR: $MNT_STORAGE is not mounted."
         exit 1
     fi
     mkdir -p "$download_dir"
@@ -262,12 +269,27 @@ prepare_windows_media() {
     if ! checkpoint_done virtio_extracted; then
         copy_virtio_media "$virtio_iso"
     fi
+
+    write_ei_cfg
     write_autounattend_xml
+}
+
+write_ei_cfg() {
+    mkdir -p "$MNT_INSTALL/sources"
+    cat > "$MNT_INSTALL/sources/ei.cfg" <<EOF
+[EditionID]
+Professional
+[Channel]
+Retail
+[VL]
+0
+EOF
 }
 
 write_bypass_script() {
     local oem_dir="$MNT_INSTALL/sources/\$OEM\$/\$\$/Setup/Scripts"
     mkdir -p "$oem_dir"
+
     cat > "$oem_dir/SetupComplete.cmd" <<'EOF'
 @echo off
 reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f
@@ -276,14 +298,14 @@ reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f
 reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassCPUCheck /t REG_DWORD /d 1 /f
 exit /b 0
 EOF
-    local bypass_file="$MNT_INSTALL/sources/bypass.cmd"
-    cat > "$bypass_file" <<'EOF'
+
+    cat > "$MNT_INSTALL/sources/bypass.cmd" <<'EOF'
 @echo off
-rem Bypass Windows Setup checks during WinPE startup.
 reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f
 reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassSecureBootCheck /t REG_DWORD /d 1 /f
 reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f
 reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassCPUCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\OOBE" /v HideOnlineAccountScreens /t REG_DWORD /d 1 /f
 exit /b 0
 EOF
 
@@ -292,12 +314,38 @@ EOF
 
 write_autounattend_xml() {
     local output_path="$MNT_INSTALL/Autounattend.xml"
+    local esc_user esc_pass esc_key esc_locale esc_tz esc_edition
 
-    cat > "$output_path" <<'EOF'
+    esc_user=$(printf '%s' "$WINDOWS_USERNAME" | xml_escape)
+    esc_pass=$(printf '%s' "$WINDOWS_PASSWORD" | xml_escape)
+    esc_key=$(printf '%s' "$WINDOWS_GENERIC_KEY" | xml_escape)
+    esc_locale=$(printf '%s' "$WINDOWS_LOCALE" | xml_escape)
+    esc_tz=$(printf '%s' "$WINDOWS_TIMEZONE" | xml_escape)
+    esc_edition=$(printf '%s' "$WINDOWS_EDITION" | xml_escape)
+
+    cat > "$output_path" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
   <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage>
+        <UILanguage>$esc_locale</UILanguage>
+      </SetupUILanguage>
+      <InputLocale>$esc_locale</InputLocale>
+      <SystemLocale>$esc_locale</SystemLocale>
+      <UILanguage>$esc_locale</UILanguage>
+      <UserLocale>$esc_locale</UserLocale>
+    </component>
     <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+        <FullName>$esc_user</FullName>
+        <Organization>Contabo</Organization>
+        <ProductKey>
+          <Key>$esc_key</Key>
+          <WillShowUI>Never</WillShowUI>
+        </ProductKey>
+      </UserData>
       <DiskConfiguration>
         <Disk>
           <DiskID>0</DiskID>
@@ -321,11 +369,67 @@ write_autounattend_xml() {
             <PartitionID>1</PartitionID>
           </InstallTo>
           <InstallToAvailablePartition>false</InstallToAvailablePartition>
+          <WillShowUI>OnError</WillShowUI>
+          <InstallFrom>
+            <MetaData wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+              <Key>/IMAGE/NAME</Key>
+              <Value>$esc_edition</Value>
+            </MetaData>
+          </InstallFrom>
         </OSImage>
       </ImageInstall>
-      <UserData>
-        <AcceptEula>true</AcceptEula>
-      </UserData>
+    </component>
+  </settings>
+
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <ComputerName>*</ComputerName>
+      <TimeZone>$esc_tz</TimeZone>
+    </component>
+  </settings>
+
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>$esc_locale</InputLocale>
+      <SystemLocale>$esc_locale</SystemLocale>
+      <UILanguage>$esc_locale</UILanguage>
+      <UserLocale>$esc_locale</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <AutoLogon>
+        <Enabled>true</Enabled>
+        <Username>$esc_user</Username>
+        <Password>
+          <Value>$esc_pass</Value>
+          <PlainText>true</PlainText>
+        </Password>
+        <LogonCount>1</LogonCount>
+      </AutoLogon>
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideLocalAccountScreen>false</HideLocalAccountScreen>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <NetworkLocation>Work</NetworkLocation>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+      <RegisteredOwner>$esc_user</RegisteredOwner>
+      <RegisteredOrganization>Contabo</RegisteredOrganization>
+      <TimeZone>$esc_tz</TimeZone>
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+            <Name>$esc_user</Name>
+            <DisplayName>$esc_user</DisplayName>
+            <Group>Administrators</Group>
+            <Password>
+              <Value>$esc_pass</Value>
+              <PlainText>true</PlainText>
+            </Password>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
     </component>
   </settings>
 </unattend>
@@ -336,10 +440,11 @@ create_bypass_cmd() {
     local output_path="$1"
     cat > "$output_path" <<'EOF'
 @echo off
-reg add "HKLM\\SYSTEM\\Setup\\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f
-reg add "HKLM\\SYSTEM\\Setup\\LabConfig" /v BypassSecureBootCheck /t REG_DWORD /d 1 /f
-reg add "HKLM\\SYSTEM\\Setup\\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f
-reg add "HKLM\\SYSTEM\\Setup\\LabConfig" /v BypassCPUCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassSecureBootCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassCPUCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\OOBE" /v HideOnlineAccountScreens /t REG_DWORD /d 1 /f
 exit /b 0
 EOF
 }
@@ -347,121 +452,96 @@ EOF
 create_unattended_startnet_cmd() {
     local output_path="$1"
 
-    if [ -n "${UNATTENDED_CMD:-}" ]; then
-        echo "@echo off" > "$output_path"
-        echo "wpeinit" >> "$output_path"
-        echo "$UNATTENDED_CMD" >> "$output_path"
+    if [ -n "$UNATTENDED_CMD" ]; then
+        {
+            echo "@echo off"
+            echo "wpeinit"
+            echo "$UNATTENDED_CMD"
+        } > "$output_path"
         return
     fi
 
     cat > "$output_path" <<'EOF'
 @echo off
 wpeinit
-rem Load VirtIO storage drivers from the injected boot.wim image.
 for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    if exist %%D:\virtio\viostor\2k3\amd64\viostor.inf (
-        echo Loading viostor driver from %%D:\virtio\viostor\2k3\amd64
-        drvload %%D:\virtio\viostor\2k3\amd64\viostor.inf
+    if exist %%D:\virtio\vioscsi\w11\amd64\vioscsi.inf (
+        drvload %%D:\virtio\vioscsi\w11\amd64\vioscsi.inf
         goto :driver_done
     )
-    if exist %%D:\virtio\amd64\w10\viostor.inf (
-        echo Loading viostor driver from %%D:\virtio\amd64\w10
-        drvload %%D:\virtio\amd64\w10\viostor.inf
+    if exist %%D:\virtio\viostor\w11\amd64\viostor.inf (
+        drvload %%D:\virtio\viostor\w11\amd64\viostor.inf
         goto :driver_done
     )
     if exist %%D:\virtio\amd64\w11\vioscsi.inf (
-        echo Loading vioscsi driver from %%D:\virtio\amd64\w11
         drvload %%D:\virtio\amd64\w11\vioscsi.inf
         goto :driver_done
     )
 )
 :driver_done
 if exist %SystemRoot%\System32\bypass.cmd (
-    echo Running bypass.cmd
     call %SystemRoot%\System32\bypass.cmd
 )
 EOF
 }
 
 patch_boot_wim() {
-    if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
-        echo "ERROR: $MNT_INSTALL/sources/boot.wim not found."
-        exit 1
-    fi
-    if ! command_exists wimlib-imagex; then
-        echo "WARNING: wimlib-imagex not installed. Skipping boot.wim patch."
-        echo "VirtIO drivers will still be copied to $MNT_INSTALL/sources/virtio, but boot.wim injection will not be applied."
-        return
-    fi
+    [ -f "$MNT_INSTALL/sources/boot.wim" ] || { echo "ERROR: boot.wim not found."; exit 1; }
 
     echo "Inspecting boot.wim images..."
     wimlib-imagex info "$MNT_INSTALL/sources/boot.wim" > /tmp/bootwim_info.txt
-    local image_count
-    local auto_image_index
+
+    local image_count auto_image_index
     image_count=$(grep -c '^Index:' /tmp/bootwim_info.txt || true)
 
     if [ "$image_count" -ge 2 ]; then
         auto_image_index=2
-        echo "Using boot.wim image index 2 to match upstream behavior."
     else
         auto_image_index=$(awk '
             BEGIN { first_idx=""; fallback_idx=""; found=0 }
-            /Index:/ { idx=$2; if (first_idx == "") first_idx = idx }
-            /Name:/ {
+            /^Index:/ { idx=$2; if (first_idx == "") first_idx = idx }
+            /^Name:/ {
                 name = substr($0, index($0, $2))
                 lname = tolower(name)
-                if (lname ~ /windows setup/ || lname ~ /microsoft windows setup/ || lname ~ /setup \(amd64\)/) {
+                if (lname ~ /windows setup/ || lname ~ /microsoft windows setup/) {
                     print idx
                     found=1
                     exit
                 }
-                if (lname ~ /windows pe/ && fallback_idx == "") {
-                    fallback_idx = idx
-                }
+                if (lname ~ /windows pe/ && fallback_idx == "") fallback_idx = idx
             }
             END {
                 if (found) exit
-                if (fallback_idx != "") {
-                    print fallback_idx
-                } else if (first_idx != "") {
-                    print first_idx
-                }
+                if (fallback_idx != "") print fallback_idx
+                else if (first_idx != "") print first_idx
             }
         ' /tmp/bootwim_info.txt)
     fi
     rm -f /tmp/bootwim_info.txt
 
-    if [ -z "$auto_image_index" ]; then
-        echo "ERROR: Unable to determine boot.wim image index."
-        exit 1
-    fi
-
-    echo "Selected boot.wim image index: $auto_image_index"
+    [ -n "$auto_image_index" ] || { echo "ERROR: Could not determine boot.wim image index."; exit 1; }
 
     create_bypass_cmd /tmp/bypass.cmd
-    cat > /tmp/wimcmd.txt <<'EOF'
-add /mnt/sources/virtio /virtio
-add /mnt/sources/bypass.cmd /Windows/System32/bypass.cmd
+    cat > /tmp/wimcmd.txt <<EOF
+add $MNT_INSTALL/sources/virtio /virtio
+add /tmp/bypass.cmd /Windows/System32/bypass.cmd
 EOF
     wimlib-imagex update "$MNT_INSTALL/sources/boot.wim" "$auto_image_index" < /tmp/wimcmd.txt
     rm -f /tmp/wimcmd.txt
 
     if [ "$UNATTENDED" -eq 1 ]; then
-        echo "Adding unattended WinPE startup script to boot.wim..."
         create_unattended_startnet_cmd /tmp/startnet.cmd
         echo "add /tmp/startnet.cmd /Windows/System32/startnet.cmd" > /tmp/wimcmd.txt
         wimlib-imagex update "$MNT_INSTALL/sources/boot.wim" "$auto_image_index" < /tmp/wimcmd.txt
         rm -f /tmp/wimcmd.txt /tmp/startnet.cmd
-        touch "$MNT_INSTALL/sources/boot.wim.unattended"
     fi
 
     touch "$MNT_INSTALL/sources/boot.wim.virtio_patched"
-    checkpoint_set "boot_wim_patched"
+    checkpoint_set boot_wim_patched
 }
 
 write_grub_config() {
     mkdir -p "$MNT_INSTALL/boot/grub"
-
     cat > "$MNT_INSTALL/boot/grub/grub.cfg" <<'EOF'
 set timeout=5
 set default=0
@@ -473,7 +553,6 @@ menuentry "windows installer (BIOS)" {
     boot
 }
 EOF
-
     checkpoint_set grub_cfg
 }
 
@@ -491,20 +570,25 @@ verify_ready() {
     [ -d "$MNT_INSTALL/sources/virtio" ] || { echo "ERROR: Missing $MNT_INSTALL/sources/virtio"; exit 1; }
     [ -f "$MNT_INSTALL/boot/grub/grub.cfg" ] || { echo "ERROR: Missing grub.cfg"; exit 1; }
 
-    verify_grub_config
-
-    grep -q 'chainloader /bootmgr' "$MNT_INSTALL/boot/grub/grub.cfg"         || { echo "ERROR: GRUB is not configured to chainload /bootmgr"; exit 1; }
+    grep -q 'chainloader /bootmgr' "$MNT_INSTALL/boot/grub/grub.cfg" \
+        || { echo "ERROR: GRUB is not configured to chainload /bootmgr"; exit 1; }
 
     echo "All required installer files are present."
     echo "Reboot the VPS and select: windows installer (BIOS)"
 }
 
 main() {
-    verify_toolchain
+    require_root
+    parse_args "$@"
+    ensure_toolchain
     verify_vps_compatibility
-    if [ "$RECREATE_DISK" -eq 1 ]; then
-        recreate_disk
+
+    if [ "$CHECK_ONLY" -eq 1 ]; then
+        echo "Check-only mode complete."
+        exit 0
     fi
+
+    ensure_partitions_ready
     prepare_windows_media
     write_bypass_script
     patch_boot_wim
