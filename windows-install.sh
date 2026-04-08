@@ -260,20 +260,22 @@ xml_escape() {
 }
 
 prepare_windows_media() {
-    local download_dir="$MNT_STORAGE"
+    local download_dir
+    download_dir=$(choose_download_dir)
     if [ -z "$download_dir" ]; then
-        echo "ERROR: MNT_STORAGE is not configured."
+        echo "ERROR: could not determine a download directory."
         exit 1
     fi
-    if ! mountpoint -q "$download_dir" 2>/dev/null; then
-        echo "ERROR: $download_dir is not mounted."
-        exit 1
+    if [ "$download_dir" = "$MNT_STORAGE" ] || [ "$download_dir" = "/root/windisk" ]; then
+        if ! mountpoint -q "$download_dir" 2>/dev/null; then
+            echo "ERROR: $download_dir is not mounted."
+            exit 1
+        fi
     fi
     echo "Using download directory: $download_dir"
     mkdir -p "$download_dir"
     local windows_iso="$download_dir/Windows.iso"
     local virtio_iso="$download_dir/VirtIO.iso"
-
     WINDOWS_ISO_URL="$(prompt_value "$WINDOWS_ISO_URL" "Enter Windows ISO URL: ")"
     VIRTIO_ISO_URL="$(prompt_value "$VIRTIO_ISO_URL" "Enter VirtIO ISO URL [default]: ")"
 
