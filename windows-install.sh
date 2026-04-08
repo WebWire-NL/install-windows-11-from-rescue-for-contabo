@@ -34,6 +34,23 @@ checkpoint_done() { [ -f "$STATE_DIR/$1" ]; }
 checkpoint_set() { touch "$STATE_DIR/$1"; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+refresh_partition_table() {
+    echo "Refreshing kernel partition table for $TARGET_DISK..."
+    if command_exists partprobe; then
+        partprobe "$TARGET_DISK" || true
+    fi
+    if command_exists blockdev; then
+        blockdev --rereadpt "$TARGET_DISK" || true
+    fi
+    if command_exists partx; then
+        partx -u "$TARGET_DISK" || true
+    fi
+    if command_exists udevadm; then
+        udevadm settle --timeout=10 || true
+    fi
+    sleep 3
+}
+
 require_root() {
     [ "$(id -u)" -eq 0 ] || { echo "ERROR: Run as root."; exit 1; }
 }
