@@ -34,7 +34,7 @@ checkpoint_done() { [ -f "$STATE_DIR/$1" ]; }
 checkpoint_set() { touch "$STATE_DIR/$1"; }
 dump_checkpoint_state() {
     echo "=== checkpoint state ==="
-    for cp in partitions windows_extracted virtio_extracted boot_wim_patched bypass_ready grub_cfg grub_installed; do
+    for cp in partitions downloads_completed windows_extracted virtio_extracted boot_wim_patched bypass_ready grub_cfg grub_installed; do
         if checkpoint_done "$cp"; then
             echo "$cp: set"
         else
@@ -321,8 +321,24 @@ prepare_windows_media() {
     [ -n "$WINDOWS_ISO_URL" ] || { echo "ERROR: Windows ISO URL is required."; exit 1; }
     [ -n "$VIRTIO_ISO_URL" ] || VIRTIO_ISO_URL="$DEFAULT_VIRTIO_ISO_URL"
 
-    download_file "$WINDOWS_ISO_URL" "$windows_iso"
-    download_file "$VIRTIO_ISO_URL" "$virtio_iso"
+    if [ "$FORCE_DOWNLOAD" -eq 1 ]; then
+        rm -f "$STATE_DIR/downloads_completed"
+    fi
+
+    if checkpoint_done downloads_completed; then
+        if [ -f "$windows_iso" ] && [ -f "$virtio_iso" ]; then
+            echo "Using existing downloaded ISOs."
+        else
+            echo "WARNING: downloads_completed checkpoint is stale; redownloading ISOs."
+            rm -f "$STATE_DIR/downloads_completed"
+        fi
+    fi
+
+    if ! checkpoint_done downloads_completed; then
+        download_file "$WINDOWS_ISO_URL" "$windows_iso"
+        download_file "$VIRTIO_ISO_URL" "$virtio_iso"
+        checkpoint_set downloads_completed
+    fi
 
     if checkpoint_done windows_extracted; then
         if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
