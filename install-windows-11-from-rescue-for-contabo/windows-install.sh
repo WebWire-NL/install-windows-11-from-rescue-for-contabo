@@ -4,6 +4,8 @@
 NO_PROMPT=0
 ISO_URL=""
 VIRTIO_ISO_URL=""
+WINDOWS_ISO_MD5=""
+VIRTIO_ISO_MD5=""
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --no-prompt)
@@ -16,6 +18,22 @@ while [[ "$#" -gt 0 ]]; do
             ;;
         --virtio-url)
             VIRTIO_ISO_URL="$2"
+            shift 2
+            ;;
+        --windows-iso-md5)
+            WINDOWS_ISO_MD5="$2"
+            shift 2
+            ;;
+        --virtio-iso-md5)
+            VIRTIO_ISO_MD5="$2"
+            shift 2
+            ;;
+        --iso-md5)
+            WINDOWS_ISO_MD5="$2"
+            shift 2
+            ;;
+        --virtio-md5)
+            VIRTIO_ISO_MD5="$2"
             shift 2
             ;;
         *)
@@ -67,6 +85,7 @@ package_for_command() {
         parted|partprobe) echo parted ;;
         gdisk) echo gdisk ;;
         curl) echo curl ;;
+        md5sum) echo coreutils ;;
         *) echo "" ;;
     esac
 }
@@ -102,7 +121,7 @@ install_packages_for_commands() {
 }
 
 ensure_required_tools() {
-    local required=(curl awk grep rsync parted partprobe mkfs.ntfs mkfs.ext4 mount umount grub-install grub-probe git aria2c wget gdisk)
+    local required=(curl awk grep rsync parted partprobe mkfs.ntfs mkfs.ext4 mount umount grub-install grub-probe git aria2c wget gdisk md5sum)
     local missing=()
     local cmd
 
@@ -126,6 +145,27 @@ ensure_required_tools() {
         echo "ERROR: Missing required commands after installation: ${missing[*]}"
         exit 1
     fi
+}
+
+verify_iso_md5() {
+    local file="$1"
+    local expected="$2"
+    if [ -z "$expected" ]; then
+        return 0
+    fi
+    if ! command -v md5sum >/dev/null 2>&1; then
+        echo "WARNING: md5sum unavailable, skipping hash verification for $file"
+        return 0
+    fi
+    local actual
+    actual=$(md5sum "$file" | awk '{print $1}')
+    if [ "$actual" != "$expected" ]; then
+        echo "ERROR: MD5 mismatch for $file"
+        echo "  expected: $expected"
+        echo "  actual:   $actual"
+        return 1
+    fi
+    echo "MD5 verified for $file"
 }
 
 ensure_required_tools
@@ -261,6 +301,9 @@ if [ ! -f "$WINDOWS_ISO" ] || [ ! -f "$VIRTIO_ISO" ]; then
     echo "ERROR: Failed to download one or both ISOs. Exiting."
     exit 1
 fi
+
+verify_iso_md5 "$WINDOWS_ISO" "$WINDOWS_ISO_MD5"
+verify_iso_md5 "$VIRTIO_ISO" "$VIRTIO_ISO_MD5"
 
 echo "Windows ISO downloaded successfully to $WINDOWS_ISO."
 echo "VirtIO ISO downloaded successfully to $VIRTIO_ISO."
