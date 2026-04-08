@@ -79,7 +79,8 @@ bash windows-install.sh --no-prompt --windows-iso-url "<windows-iso-url>" --virt
      `X:\sources\virtio\viostor\2k3\amd64`
    - Once the correct driver is loaded, the disk should appear in the installer.
 
-   ![Windows 11 setup load driver screen](docs/screenshots/choose_virtio_path.png)
+   ![Windows 11 setup load driver screen](docs/screenshots/load_driver.png)
+   ![Windows 11 setup choose VirtIO path](docs/screenshots/choose_virtio_path.png)
 
 4. Once the storage driver is loaded, the installer should show your target disk.
    - If you are installing Windows to the first partition, delete and recreate that partition inside the installer before installing.
@@ -94,6 +95,8 @@ bash windows-install.sh --no-prompt --windows-iso-url "<windows-iso-url>" --virt
    - If you do not see `bypass.cmd` on `X:`, switch to the drive that contains `sources\virtio` and run bypass from there.
    - In this setup, the bypass file is located at `D:\sources\bypass.cmd` on the installer media.
    - Use `diskpart` only after the correct media volume is visible and drivers are loaded.
+
+   ![Run bypass.cmd in Windows install command prompt](docs/screenshots/run_bypass.png)
 6. Close the Command Prompt and continue with the installation.
 7. If Windows asks for additional drivers, browse again to the same `virtio` folder on the installer media and load the correct driver.
 8. Continue the standard Windows installation.
