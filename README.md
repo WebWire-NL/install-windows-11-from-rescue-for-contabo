@@ -54,14 +54,21 @@ Automated script and instructions to install Windows 11 on a Contabo VPS from th
 1. In the Contabo panel, get your VNC connection info and connect with VNC Viewer.
 2. Proceed with Windows 11 setup.
 3. When you reach the first setup screen, press `Shift+F10` to open Command Prompt.
-6. Run the following commands to bypass hardware checks:
+4. In the Command Prompt window, switch to the installation media sources folder and run the bypass script:
    ```
    cd X:\sources
    bypass.cmd
    ```
-   This will apply the TPM, RAM, and Secure Boot bypass required for Contabo VPS installs.
-7. Close the Command Prompt and continue with the installation.
-8. When prompted for drivers, browse to the `virtio` folder to load storage/network drivers.
+   - If `X:` is not the correct drive letter, check the available drives first:
+     ```
+     diskpart
+     list volume
+     exit
+     ```
+     Then use the correct letter for the mounted installer media.
+5. After the bypass script runs, close the Command Prompt and continue with the installation.
+6. When Windows asks for storage/network drivers, browse to the `virtio` folder on the same installation media and load the appropriate driver for your architecture (usually under `amd64`).
+7. Continue the standard Windows installation.
 
 ## Notes
 - The script uses the official Windows 11 evaluation ISO. You can change the ISO URL in the script if needed.
