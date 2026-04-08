@@ -1245,36 +1245,112 @@ copy_windows_media() {
 }
 
 copy_virtio_media() {
-    if [ -d /mnt/sources/virtio ] && [ -f /mnt/sources/virtio/NetKVM/2k3/amd64/netkvm.sys ] && [ -z "${VIRTIO_ISO:-}" ]; then
-        echo "VirtIO drivers already present on /mnt/sources/virtio and no VirtIO ISO is available. Skipping VirtIO ISO extraction."
+    mount_existing_partitions
+
+    local dest_mnt="/mnt/sources/virtio"
+    local dest_root="/root/windisk/sources/virtio"
+    local has_mnt=0
+    local has_root=0
+
+    if [ -d "$dest_mnt" ] && [ -f "$dest_mnt/NetKVM/2k3/amd64/netkvm.sys" ]; then
+        has_mnt=1
+    fi
+    if [ -d "$dest_root" ] && [ -f "$dest_root/NetKVM/2k3/amd64/netkvm.sys" ]; then
+        has_root=1
+    fi
+
+    if [ "$has_mnt" -eq 1 ] && [ "$has_root" -eq 1 ] && [ -z "${VIRTIO_ISO:-}" ]; then
+        echo "VirtIO drivers already present on both partitions and no VirtIO ISO is available. Skipping extraction."
         checkpoint_set "virtio_extracted"
         return
     fi
 
-    if [ -d /mnt/sources/virtio ] && [ -f /mnt/sources/virtio/NetKVM/2k3/amd64/netkvm.sys ]; then
-        echo "VirtIO drivers already exist in /mnt/sources/virtio. Re-extracting from the provided VirtIO ISO."
-    else
-        echo "Extracting VirtIO ISO to /mnt/sources/virtio..."
+    if [ "$has_mnt" -eq 1 ] && [ "$has_root" -eq 1 ]; then
+        echo "VirtIO drivers already present on both partitions. Skipping extraction."
+        checkpoint_set "virtio_extracted"
+        return
     fi
 
-    ISO_MOUNT_DIR=$(mktemp -d)
-    mount -o loop "$VIRTIO_ISO" "$ISO_MOUNT_DIR"
-    mkdir -p /mnt/sources/virtio
-    rsync -a --info=progress2 "$ISO_MOUNT_DIR"/ /mnt/sources/virtio/
-    umount "$ISO_MOUNT_DIR"
-    rmdir "$ISO_MOUNT_DIR"
+    if [ "$has_mnt" -eq 1 ] && [ "$has_root" -eq 0 ] && [ -z "${VIRTIO_ISO:-}" ]; then
+        echo "Copying existing /mnt VirtIO drivers to /root/windisk..."
+        mkdir -p "$dest_root"
+        rsync -a --info=progress2 "$dest_mnt"/ "$dest_root"/
+        checkpoint_set "virtio_extracted"
+        return
+    fi
 
-    checkpoint_set "virtio_extracted"
+    if [ "$has_root" -eq 1 ] && [ "$has_mnt" -eq 0 ] && [ -z "${VIRTIO_ISO:-}" ]; then
+        echo "Copying existing /root/windisk VirtIO drivers to /mnt..."
+        mkdir -p "$dest_mnt"
+        rsync -a --info=progress2 "$dest_root"/ "$dest_mnt"/
+        checkpoint_set "virtio_extracted"
+        return
+    fi
+
+    if [ -n "${VIRTIO_ISO:-}" ]; then
+        if [ "$has_mnt" -eq 1 ] || [ "$has_root" -eq 1 ]; then
+            echo "Re-extracting VirtIO ISO to ensure both partitions have the latest drivers."
+        else
+            echo "Extracting VirtIO ISO to both /mnt/sources/virtio and /root/windisk/sources/virtio..."
+        fi
+
+        ISO_MOUNT_DIR=$(mktemp -d)
+        mount -o loop "$VIRTIO_ISO" "$ISO_MOUNT_DIR"
+        mkdir -p "$dest_mnt" "$dest_root"
+        rsync -a --info=progress2 "$ISO_MOUNT_DIR"/ "$dest_mnt"/
+        rsync -a --info=progress2 "$ISO_MOUNT_DIR"/ "$dest_root"/
+        umount "$ISO_MOUNT_DIR"
+        rmdir "$ISO_MOUNT_DIR"
+
+        checkpoint_set "virtio_extracted"
+        return
+    fi
+
+    echo "ERROR: VirtIO drivers are missing and no VirtIO ISO is available to populate them."
+    exit 1
 }
 
 write_bypass_files() {
-    if [ -f /mnt/sources/bypass.reg ] && [ -f /mnt/sources/bypass.cmd ]; then
-        echo "Bypass files already exist. Skipping creation."
+    mount_existing_partitions
+
+    local src_mnt="/mnt/sources"
+    local src_root="/root/windisk/sources"
+    mkdir -p "$src_mnt" "$src_root"
+
+    if [ -f "$src_mnt/bypass.reg" ] && [ -f "$src_mnt/bypass.cmd" ] && [ -f "$src_root/bypass.reg" ] && [ -f "$src_root/bypass.cmd" ]; then
+        echo "Bypass files already exist on both partitions. Skipping creation."
         checkpoint_set "bypass_files"
         return
     fi
-    mkdir -p /mnt/sources
-    cat <<'EOF' > /mnt/sources/bypass.reg
+
+    if [ -f "$src_mnt/bypass.reg" ] && [ -f "$src_mnt/bypass.cmd" ]; then
+        echo "Mirroring bypass files from /mnt to /root/windisk..."
+        cp "$src_mnt/bypass.reg" "$src_root/bypass.reg"
+        cp "$src_mnt/bypass.cmd" "$src_root/bypass.cmd"
+        checkpoint_set "bypass_files"
+        return
+    fi
+
+    if [ -f "$src_root/bypass.reg" ] && [ -f "$src_root/bypass.cmd" ]; then
+        echo "Mirroring bypass files from /root/windisk to /mnt..."
+        cp "$src_root/bypass.reg" "$src_mnt/bypass.reg"
+        cp "$src_root/bypass.cmd" "$src_mnt/bypass.cmd"
+        checkpoint_set "bypass_files"
+        return
+    fi
+
+    echo "Writing bypass files to both partitions..."
+    cat <<'EOF' > "$src_mnt/bypass.reg"
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\SYSTEM\Setup\LabConfig]
+"BypassTPMCheck"=dword:00000001
+"BypassSecureBootCheck"=dword:00000001
+"BypassRAMCheck"=dword:00000001
+"BypassCPUCheck"=dword:00000001
+"BypassStorageCheck"=dword:00000001
+EOF
+    cat <<'EOF' > "$src_root/bypass.reg"
 Windows Registry Editor Version 5.00
 
 [HKEY_LOCAL_MACHINE\SYSTEM\Setup\LabConfig]
@@ -1285,7 +1361,11 @@ Windows Registry Editor Version 5.00
 "BypassStorageCheck"=dword:00000001
 EOF
 
-    cat <<'EOF' > /mnt/sources/bypass.cmd
+    cat <<'EOF' > "$src_mnt/bypass.cmd"
+@echo off
+regedit /s "%~dp0bypass.reg"
+EOF
+    cat <<'EOF' > "$src_root/bypass.cmd"
 @echo off
 regedit /s "%~dp0bypass.reg"
 EOF
