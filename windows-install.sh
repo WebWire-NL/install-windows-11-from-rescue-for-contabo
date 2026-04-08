@@ -340,8 +340,12 @@ verify_disk_layout() {
     fi
 
     if [ "${disk_label}" = "unknown" ]; then
-        echo "ERROR: Unable to determine disk partition label. Verify /dev/sda is accessible."
-        exit 1
+        if [ "$CHECK_ONLY" -eq 1 ]; then
+            echo "WARNING: Unable to determine disk partition label. A blank disk is acceptable for fresh install."
+        else
+            echo "ERROR: Unable to determine disk partition label. Verify /dev/sda is accessible."
+            exit 1
+        fi
     fi
 }
 
