@@ -255,6 +255,7 @@ copy_windows_media() {
         exit 1
     fi
     checkpoint_set windows_extracted
+    trap - RETURN
 }
 
 copy_virtio_media() {
@@ -277,6 +278,7 @@ copy_virtio_media() {
         exit 1
     fi
     checkpoint_set virtio_extracted
+    trap - RETURN
 }
 
 xml_escape() {
