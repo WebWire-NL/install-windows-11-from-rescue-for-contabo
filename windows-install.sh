@@ -110,6 +110,7 @@ self_update_script() {
 RECREATE_DISK=0
 RESET_ZRAM=0
 CHECK_ONLY=0
+FORCE_DOWNLOAD=0
 USE_ZRAM=0
 PARSED_ARGS=()
 while [ "$#" -gt 0 ]; do
@@ -126,6 +127,10 @@ while [ "$#" -gt 0 ]; do
             CHECK_ONLY=1
             shift
             ;;
+        --force-download)
+            FORCE_DOWNLOAD=1
+            shift
+            ;;
         *)
             PARSED_ARGS+=("$1")
             shift
@@ -136,7 +141,7 @@ set -- "${PARSED_ARGS[@]}"
 
 self_update_script "$@"
 
-DEFAULT_WINDOWS_ISO_URL="https://bit.ly/3UGzNcB"
+DEFAULT_WINDOWS_ISO_URL=""
 DEFAULT_VIRTIO_ISO_URL="https://bit.ly/4d1g7Ht"
 GRUB_INSTALL_TARGET="i386-pc"
 
@@ -777,6 +782,10 @@ setup_partitions_and_mounts() {
 }
 
 find_existing_downloads() {
+    if [ "$FORCE_DOWNLOAD" -eq 1 ]; then
+        echo "--force-download requested; ignoring existing downloaded ISOs."
+        return 1
+    fi
     if [ -f /mnt/zram0/windisk/Windows.iso ] && [ -f /mnt/zram0/windisk/VirtIO.iso ]; then
         USE_ZRAM=1
         WINDOWS_ISO="/mnt/zram0/windisk/Windows.iso"
@@ -804,6 +813,10 @@ find_existing_downloads() {
 }
 
 skip_existing_extraction() {
+    if [ "$FORCE_DOWNLOAD" -eq 1 ]; then
+        echo "--force-download requested; ignoring existing installer media in /mnt."
+        return 1
+    fi
     if [ -f /mnt/bootmgr ] && [ -f /mnt/sources/boot.wim ]; then
         SKIP_WINDOWS_DOWNLOAD=1
         echo "Existing Windows installer files detected in /mnt. Skipping Windows URL prompt and download."
@@ -873,6 +886,12 @@ setup_download_environment() {
         VIRTIO_ISO_SIZE=0
     fi
 
+    if [ "$FORCE_DOWNLOAD" -eq 1 ]; then
+        echo "--force-download requested; prompting for new ISO URLs and ignoring existing /mnt installer media."
+        SKIP_WINDOWS_DOWNLOAD=0
+        SKIP_VIRTIO_DOWNLOAD=0
+    fi
+
     if find_existing_downloads; then
         echo "Existing downloaded ISOs detected. Skipping URL prompts."
         WINDOWS_ISO_URL=""
@@ -885,7 +904,7 @@ setup_download_environment() {
         SKIP_VIRTIO_DOWNLOAD=0
         skip_existing_extraction || true
         if [ "${SKIP_WINDOWS_DOWNLOAD:-0}" -eq 0 ]; then
-            WINDOWS_ISO_URL=$(prompt_url "$DEFAULT_WINDOWS_ISO_URL" "Enter the URL for Windows.iso (leave blank to use default): ")
+            WINDOWS_ISO_URL=$(prompt_url "$DEFAULT_WINDOWS_ISO_URL" "Enter the URL for Windows.iso: ")
             WINDOWS_ISO_SIZE=$(get_content_length "$WINDOWS_ISO_URL")
         else
             WINDOWS_ISO_URL=""
