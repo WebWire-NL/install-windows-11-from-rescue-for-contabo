@@ -294,8 +294,25 @@ prepare_windows_media() {
     download_file "$WINDOWS_ISO_URL" "$windows_iso"
     download_file "$VIRTIO_ISO_URL" "$virtio_iso"
 
+    if checkpoint_done windows_extracted; then
+        if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
+            echo "WARNING: windows_extracted checkpoint is stale; re-extracting Windows media."
+            rm -f "$STATE_DIR/windows_extracted"
+        else
+            echo "Using existing Windows media copy."
+        fi
+    fi
     if ! checkpoint_done windows_extracted; then
         copy_windows_media "$windows_iso"
+    fi
+
+    if checkpoint_done virtio_extracted; then
+        if [ ! -d "$MNT_INSTALL/sources/virtio" ] || [ -z "$(find "$MNT_INSTALL/sources/virtio" -type f 2>/dev/null | head -n 1)" ]; then
+            echo "WARNING: virtio_extracted checkpoint is stale; re-extracting VirtIO drivers."
+            rm -f "$STATE_DIR/virtio_extracted"
+        else
+            echo "Using existing VirtIO driver copy."
+        fi
     fi
     if ! checkpoint_done virtio_extracted; then
         copy_virtio_media "$virtio_iso"
