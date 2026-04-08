@@ -25,6 +25,31 @@ checkpoint_done() { [ -f "$STATE_DIR/$1" ]; }
 checkpoint_set() { touch "$STATE_DIR/$1"; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+package_for_command() {
+    case "$1" in
+        mkfs.ntfs) echo ntfs-3g ;;
+        mkfs.ext4) echo e2fsprogs ;;
+        grub-install) echo grub-pc ;;
+        grub-probe) echo grub-pc ;;
+        curl) echo curl ;;
+        rsync) echo rsync ;;
+        pgrep) echo procps ;;
+        awk) echo gawk ;;
+        xargs) echo findutils ;;
+        grep) echo grep ;;
+        mount|blockdev|partx|fdisk) echo util-linux ;;
+        dpkg-deb) echo dpkg ;;
+        modprobe) echo kmod ;;
+        partprobe|parted) echo parted ;;
+        wimlib-imagex) echo wimtools ;;
+        aria2c) echo aria2 ;;
+        wget) echo wget ;;
+        *) echo "" ;;
+    esac
+}
+
+command_exists() { command -v "$1" >/dev/null 2>&1; }
+
 require_root() {
     [ "$(id -u)" -eq 0 ] || { echo "ERROR: Run as root."; exit 1; }
 }
