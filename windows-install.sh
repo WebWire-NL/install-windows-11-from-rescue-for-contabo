@@ -261,12 +261,16 @@ xml_escape() {
 
 prepare_windows_media() {
     local download_dir="$MNT_STORAGE"
-    if ! mountpoint -q "$MNT_STORAGE" 2>/dev/null; then
-        echo "ERROR: $MNT_STORAGE is not mounted."
+    if [ -z "$download_dir" ]; then
+        echo "ERROR: MNT_STORAGE is not configured."
         exit 1
     fi
+    if ! mountpoint -q "$download_dir" 2>/dev/null; then
+        echo "ERROR: $download_dir is not mounted."
+        exit 1
+    fi
+    echo "Using download directory: $download_dir"
     mkdir -p "$download_dir"
-
     local windows_iso="$download_dir/Windows.iso"
     local virtio_iso="$download_dir/VirtIO.iso"
 
