@@ -259,6 +259,15 @@ xml_escape() {
         -e 's/"/\&quot;/g'
 }
 
+choose_download_dir() {
+    # Prefer the mounted installer storage partition if available.
+    if [ -n "$MNT_STORAGE" ] && mountpoint -q "$MNT_STORAGE" 2>/dev/null; then
+        echo "$MNT_STORAGE"
+        return
+    fi
+    echo "/tmp"
+}
+
 prepare_windows_media() {
     local download_dir
     download_dir=$(choose_download_dir)
