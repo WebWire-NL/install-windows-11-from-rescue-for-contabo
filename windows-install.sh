@@ -696,8 +696,8 @@ detect_auto_repair_flags() {
     local disk_label
     disk_label=$(get_disk_label)
 
-    if [ "$RECREATE_DISK" -eq 0 ] && [ "$FIRMWARE_MODE" = "bios" ] && [ "$disk_label" = "gpt" ] && ! has_bios_boot_partition; then
-        echo "Auto-detected unsafe BIOS+GPT without bios_grub. Enabling automatic recreate-disk."
+    if [ "$RECREATE_DISK" -eq 0 ] && [ "$FIRMWARE_MODE" = "bios" ] && [ "$disk_label" = "gpt" ]; then
+        echo "Auto-detected BIOS firmware with GPT disk. Recreating /dev/sda as MBR for BIOS boot."
         RECREATE_DISK=1
     fi
 
@@ -852,6 +852,7 @@ setup_partitions_and_mounts() {
     fi
     cleanup_partition_state
 
+    echo "Creating BIOS-compatible MBR partition layout on /dev/sda..."
     parted /dev/sda --script -- mklabel msdos
     if [ "$(parted /dev/sda --script print 2>/dev/null | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')" != "msdos" ]; then
         echo "ERROR: Failed to set MBR partition table on /dev/sda."
