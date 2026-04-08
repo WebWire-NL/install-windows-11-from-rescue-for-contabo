@@ -569,7 +569,7 @@ report_rescue_state() {
     echo "Disk label: ${disk_label}"
     if command_exists parted; then
         echo "Disk layout:"
-        parted /dev/sda --script print || true
+        parted -s /dev/sda print 2>/dev/null || true
     fi
 
     echo "Mount status:"
@@ -703,11 +703,11 @@ has_bios_boot_partition() {
         return 1
     fi
     local label
-    label=$(parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')
+    label=$(get_disk_label)
     if [ "$label" != "gpt" ]; then
         return 1
     fi
-    if parted /dev/sda --script print | grep -q "bios_grub"; then
+    if parted -s /dev/sda print 2>/dev/null | grep -q "bios_grub"; then
         return 0
     fi
     return 1
@@ -779,7 +779,7 @@ setup_partitions_and_mounts() {
     cleanup_partition_state
 
     parted /dev/sda --script -- mklabel msdos
-    if [ "$(parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')" != "msdos" ]; then
+    if [ "$(parted /dev/sda --script print 2>/dev/null | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')" != "msdos" ]; then
         echo "ERROR: Failed to set MBR partition table on /dev/sda."
         exit 1
     fi
@@ -1262,11 +1262,11 @@ gpt_needs_blocklists() {
         return 1
     fi
     local label
-    label=$(parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')
+    label=$(get_disk_label)
     if [ "$label" != "gpt" ]; then
         return 1
     fi
-    if parted /dev/sda --script print | grep -q "bios_grub"; then
+    if parted -s /dev/sda print 2>/dev/null | grep -q "bios_grub"; then
         return 1
     fi
     return 0
