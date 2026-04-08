@@ -230,7 +230,7 @@ copy_windows_media() {
     trap cleanup RETURN
 
     mount -o loop "$iso" "$loop_dir"
-    rsync -a "$loop_dir"/ "$MNT_INSTALL"/
+    rsync -a --info=progress2 --human-readable --stats "$loop_dir"/ "$MNT_INSTALL"/
     checkpoint_set windows_extracted
 }
 
@@ -247,7 +247,7 @@ copy_virtio_media() {
 
     mkdir -p "$MNT_INSTALL/sources/virtio"
     mount -o loop "$iso" "$loop_dir"
-    rsync -a "$loop_dir"/ "$MNT_INSTALL/sources/virtio"/
+    rsync -a --info=progress2 --human-readable --stats "$loop_dir"/ "$MNT_INSTALL/sources/virtio"/
     checkpoint_set virtio_extracted
 }
 
