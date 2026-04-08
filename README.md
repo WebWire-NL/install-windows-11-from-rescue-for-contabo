@@ -69,26 +69,29 @@ bash windows-install.sh --no-prompt --windows-iso-url "<windows-iso-url>" --virt
 1. In the Contabo panel, get your VNC connection info and connect with VNC Viewer.
 2. Proceed with Windows 11 setup.
 3. When you reach the first setup screen, choose **Load driver** before selecting a disk.
-   - Browse the available drives for the installation media that contains the `sources\virtio` folder. In WinPE this may appear as `X:\virtio_drivers`.
-   - Load the storage driver from the correct architecture path, usually under `virtio\NetKVM\2k3\amd64` or `virtio\viostor\2k3\amd64`.
+   - Browse the available drives for the installation media that contains the `sources\virtio` folder.
+   - In most cases, WinPE will show the installer media drive as `X:` or another drive letter.
+   - Select the driver path from the installer media, for example:
+     `X:\sources\virtio\amd64\w11`
+   - Choose the VirtIO SCSI driver file `vioscsi.inf` for a SCSI controller.
+   - If that does not work, try the alternate storage driver `viostor.inf` from:
+     `X:\sources\virtio\viostor\2k3\amd64`
+   - Once the correct driver is loaded, the disk should appear in the installer.
 
-   ![Load driver screen](docs/screenshots/load_driver.png)
-
-   ![Choose VirtIO path](docs/screenshots/choose_virtio_path.png)
+   ![Windows 11 setup load driver screen](docs/screenshots/choose_virtio_path.png)
 
 4. Once the storage driver is loaded, the installer should show your target disk.
+   - If you are installing Windows to the first partition, delete and recreate that partition inside the installer before installing.
 5. If you need to apply bypass files, press `Shift+F10` to open Command Prompt and run:
    ```cmd
    cd <installer-drive-letter>:\sources
    bypass.cmd
    ```
 
-   ![Run bypass](docs/screenshots/run_bypass.png)
-
    - `X:` is the WinPE boot drive and usually does not contain the installer media.
    - The installer media is often mounted as `C:`, `D:`, or another letter in WinPE.
    - If you do not see `bypass.cmd` on `X:`, switch to the drive that contains `sources\virtio` and run bypass from there.
-   - In your current setup, the bypass file is located on `C:\sources\bypass.cmd`.
+   - In this setup, the bypass file is located at `D:\sources\bypass.cmd` on the installer media.
    - Use `diskpart` only after the correct media volume is visible and drivers are loaded.
 6. Close the Command Prompt and continue with the installation.
 7. If Windows asks for additional drivers, browse again to the same `virtio` folder on the installer media and load the correct driver.
