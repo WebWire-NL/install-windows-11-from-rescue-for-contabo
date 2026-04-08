@@ -49,14 +49,19 @@ Automated script and instructions to install Windows 11 on a Contabo VPS from th
    bash windows-install.sh
    ```
 
-#### Environment variables
-You can also use environment variables to run the script non-interactively and avoid prompt input:
-- `WINDOWS_ISO_URL` – set the Windows ISO download URL.
-- `VIRTIO_ISO_URL` – set the VirtIO driver ISO download URL.
-- `NO_PROMPT=1` – skip interactive prompts and use the supplied environment values or defaults.
-- `FORCE_DOWNLOAD=1` – force redownload of ISOs and installer media even if files already exist.
-- `CHECK_ONLY=1` – run only the preflight compatibility/rescue checks.
-- `RECREATE_DISK=1` – force disk recreation on the next run.
+#### Command-line arguments
+The installer now supports explicit CLI arguments instead of environment variables:
+- `--windows-iso-url <url>` — specify the Windows ISO download URL.
+- `--virtio-iso-url <url>` — specify the VirtIO driver ISO download URL.
+- `--no-prompt` — run non-interactively and avoid prompting for input.
+- `--force-download` — force redownload of ISOs and installer media even if files already exist.
+- `--check-only` — run only the preflight compatibility/rescue checks.
+- `--recreate-disk` — force disk recreation on the next run.
+
+Example:
+```bash
+bash windows-install.sh --no-prompt --windows-iso-url "<windows-iso-url>" --virtio-iso-url "<virtio-iso-url>"
+```
 
 4. The script will partition the disk, download Windows 11 and VirtIO drivers, and prepare everything. The VPS will reboot when done.
 

@@ -111,6 +111,9 @@ RECREATE_DISK=0
 CHECK_ONLY=0
 FORCE_DOWNLOAD=0
 USE_ZRAM=0
+NO_PROMPT=0
+WINDOWS_ISO_URL_ARG=""
+VIRTIO_ISO_URL_ARG=""
 PARSED_ARGS=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -126,6 +129,36 @@ while [ "$#" -gt 0 ]; do
             FORCE_DOWNLOAD=1
             shift
             ;;
+        --no-prompt)
+            NO_PROMPT=1
+            shift
+            ;;
+        --windows-iso-url)
+            if [ "$#" -lt 2 ]; then
+                echo "ERROR: --windows-iso-url requires a value."
+                exit 1
+            fi
+            shift
+            WINDOWS_ISO_URL_ARG="$1"
+            shift
+            ;;
+        --windows-iso-url=*)
+            WINDOWS_ISO_URL_ARG="${1#*=}"
+            shift
+            ;;
+        --virtio-iso-url)
+            if [ "$#" -lt 2 ]; then
+                echo "ERROR: --virtio-iso-url requires a value."
+                exit 1
+            fi
+            shift
+            VIRTIO_ISO_URL_ARG="$1"
+            shift
+            ;;
+        --virtio-iso-url=*)
+            VIRTIO_ISO_URL_ARG="${1#*=}"
+            shift
+            ;;
         *)
             PARSED_ARGS+=("$1")
             shift
@@ -136,12 +169,6 @@ set -- "${PARSED_ARGS[@]}"
 
 self_update_script "$@"
 
-RECREATE_DISK="${RECREATE_DISK:-0}"
-CHECK_ONLY="${CHECK_ONLY:-0}"
-FORCE_DOWNLOAD="${FORCE_DOWNLOAD:-0}"
-USE_ZRAM="${USE_ZRAM:-0}"
-NO_PROMPT="${NO_PROMPT:-0}"
-
 DEFAULT_WINDOWS_ISO_URL=""
 DEFAULT_VIRTIO_ISO_URL="https://bit.ly/4d1g7Ht"
 GRUB_INSTALL_TARGET="i386-pc"
@@ -150,7 +177,7 @@ prompt_url() {
     local default="$1"
     local prompt="$2"
     local value
-    if [ "${NO_PROMPT:-0}" -eq 1 ] || [ ! -t 0 ]; then
+    if [ ! -t 0 ]; then
         echo "$default"
         return
     fi
@@ -903,8 +930,8 @@ print_current_state() {
 setup_download_environment() {
     print_current_state
 
-    WINDOWS_ISO_URL="${WINDOWS_ISO_URL:-$DEFAULT_WINDOWS_ISO_URL}"
-    VIRTIO_ISO_URL="${VIRTIO_ISO_URL:-$DEFAULT_VIRTIO_ISO_URL}"
+    WINDOWS_ISO_URL="$WINDOWS_ISO_URL_ARG"
+    VIRTIO_ISO_URL="$VIRTIO_ISO_URL_ARG"
 
     if [ "$FORCE_DOWNLOAD" -eq 1 ]; then
         echo "--force-download requested; prompting for new ISO URLs and ignoring existing /mnt installer media."
@@ -924,13 +951,18 @@ setup_download_environment() {
         SKIP_VIRTIO_DOWNLOAD=0
         skip_existing_extraction || true
         if [ "${SKIP_WINDOWS_DOWNLOAD:-0}" -eq 0 ]; then
-            if [ "${NO_PROMPT:-0}" -eq 1 ] || [ ! -t 0 ]; then
-                echo "Using Windows ISO URL from environment or default: ${WINDOWS_ISO_URL:-<unset>}"
+            if [ "$NO_PROMPT" -eq 1 ] || [ ! -t 0 ]; then
+                if [ -n "$WINDOWS_ISO_URL" ]; then
+                    echo "Using Windows ISO URL from CLI option: $WINDOWS_ISO_URL"
+                else
+                    echo "ERROR: --windows-iso-url is required in non-interactive mode."
+                    exit 1
+                fi
             else
                 WINDOWS_ISO_URL=$(prompt_url "${WINDOWS_ISO_URL:-$DEFAULT_WINDOWS_ISO_URL}" "Enter the URL for Windows.iso: ")
             fi
             if [ -z "${WINDOWS_ISO_URL:-}" ]; then
-                echo "ERROR: Windows ISO URL is required. Set WINDOWS_ISO_URL or run interactively."
+                echo "ERROR: Windows ISO URL is required. Provide --windows-iso-url or run interactively."
                 exit 1
             fi
             WINDOWS_ISO_SIZE=$(get_content_length "$WINDOWS_ISO_URL")
@@ -940,13 +972,18 @@ setup_download_environment() {
         fi
 
         if [ "${SKIP_VIRTIO_DOWNLOAD:-0}" -eq 0 ]; then
-            if [ "${NO_PROMPT:-0}" -eq 1 ] || [ ! -t 0 ]; then
-                echo "Using VirtIO ISO URL from environment or default: ${VIRTIO_ISO_URL:-<default>}"
+            if [ "$NO_PROMPT" -eq 1 ] || [ ! -t 0 ]; then
+                if [ -n "$VIRTIO_ISO_URL" ]; then
+                    echo "Using VirtIO ISO URL from CLI option: $VIRTIO_ISO_URL"
+                else
+                    VIRTIO_ISO_URL="$DEFAULT_VIRTIO_ISO_URL"
+                    echo "Using default VirtIO ISO URL: $VIRTIO_ISO_URL"
+                fi
             else
                 VIRTIO_ISO_URL=$(prompt_url "${VIRTIO_ISO_URL:-$DEFAULT_VIRTIO_ISO_URL}" "Enter the URL for Virtio.iso (leave blank to use default): ")
             fi
             if [ -z "${VIRTIO_ISO_URL:-}" ]; then
-                echo "ERROR: VirtIO ISO URL is required. Set VIRTIO_ISO_URL or run interactively."
+                echo "ERROR: VirtIO ISO URL is required. Provide --virtio-iso-url or run interactively."
                 exit 1
             fi
             VIRTIO_ISO_SIZE=$(get_content_length "$VIRTIO_ISO_URL")
