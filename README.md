@@ -48,27 +48,37 @@ Automated script and instructions to install Windows 11 on a Contabo VPS from th
    ```
    bash windows-install.sh
    ```
+
+#### Environment variables
+You can also use environment variables to run the script non-interactively and avoid prompt input:
+- `WINDOWS_ISO_URL` – set the Windows ISO download URL.
+- `VIRTIO_ISO_URL` – set the VirtIO driver ISO download URL.
+- `NO_PROMPT=1` – skip interactive prompts and use the supplied environment values or defaults.
+- `FORCE_DOWNLOAD=1` – force redownload of ISOs and installer media even if files already exist.
+- `CHECK_ONLY=1` – run only the preflight compatibility/rescue checks.
+- `RECREATE_DISK=1` – force disk recreation on the next run.
+
 4. The script will partition the disk, download Windows 11 and VirtIO drivers, and prepare everything. The VPS will reboot when done.
 
 ### 5. Complete Windows 11 Installation via VNC
 1. In the Contabo panel, get your VNC connection info and connect with VNC Viewer.
 2. Proceed with Windows 11 setup.
-3. When you reach the first setup screen, press `Shift+F10` to open Command Prompt.
-4. In the Command Prompt window, switch to the installation media sources folder and run the bypass script:
-   ```
-   cd X:\sources
+3. When you reach the first setup screen, choose **Load driver** before selecting a disk.
+   - Browse the available drives for the installation media that contains the `sources\virtio` folder.
+   - Load the storage driver from the correct architecture path, usually under `virtio\NetKVM\2k3\amd64` or `virtio\viostor\2k3\amd64`.
+4. Once the storage driver is loaded, the installer should show your target disk.
+5. If you need to apply bypass files, press `Shift+F10` to open Command Prompt and run:
+   ```cmd
+   cd <installer-drive-letter>:\sources
    bypass.cmd
    ```
-   - If `X:` is not the correct drive letter, check the available drives first:
-     ```
-     diskpart
-     list volume
-     exit
-     ```
-     Then use the correct letter for the mounted installer media.
-5. After the bypass script runs, close the Command Prompt and continue with the installation.
-6. When Windows asks for storage/network drivers, browse to the `virtio` folder on the same installation media and load the appropriate driver for your architecture (usually under `amd64`).
-7. Continue the standard Windows installation.
+   - `X:` is the WinPE boot drive and usually does not contain the installer media.
+   - If you do not see `bypass.cmd` on `X:`, do not stay there.
+   - Instead, find the drive letter of the Windows installation media that contains `sources\virtio` and run bypass from that media volume.
+   - Use `diskpart` only after the correct media volume is visible and drivers are loaded.
+6. Close the Command Prompt and continue with the installation.
+7. If Windows asks for additional drivers, browse again to the same `virtio` folder on the installer media and load the correct driver.
+8. Continue the standard Windows installation.
 
 ## Notes
 - The script uses the official Windows 11 evaluation ISO. You can change the ISO URL in the script if needed.
