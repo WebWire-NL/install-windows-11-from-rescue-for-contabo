@@ -146,8 +146,7 @@ recreate_partitions() {
     parted "$TARGET_DISK" --script -- mklabel msdos
     parted "$TARGET_DISK" --script -- mkpart primary ntfs 1MiB 50%
     parted "$TARGET_DISK" --script -- mkpart primary ntfs 50% 100%
-    partprobe "$TARGET_DISK"
-    sleep 3
+    refresh_partition_table
 
     mkfs.ntfs -f "$PART1"
     mkfs.ntfs -f "$PART2"
