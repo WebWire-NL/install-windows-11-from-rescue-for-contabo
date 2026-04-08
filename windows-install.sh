@@ -32,6 +32,24 @@ WINDOWS_PASSWORD="${WINDOWS_PASSWORD:-ChangeMeNow!123}"
 
 checkpoint_done() { [ -f "$STATE_DIR/$1" ]; }
 checkpoint_set() { touch "$STATE_DIR/$1"; }
+dump_checkpoint_state() {
+    echo "=== checkpoint state ==="
+    for cp in partitions windows_extracted virtio_extracted boot_wim_patched bypass_ready grub_cfg grub_installed; do
+        if checkpoint_done "$cp"; then
+            echo "$cp: set"
+        else
+            echo "$cp: missing"
+        fi
+    done
+    echo "=== installer file state ==="
+    for file in "$MNT_INSTALL/bootmgr" "$MNT_INSTALL/sources/boot.wim" "$MNT_INSTALL/sources/virtio/NetKVM/2k3/amd64/netkvm.sys"; do
+        if [ -e "$file" ]; then
+            echo "$file: present"
+        else
+            echo "$file: missing"
+        fi
+    done
+}
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 refresh_partition_table() {
@@ -231,6 +249,11 @@ copy_windows_media() {
 
     mount -o loop "$iso" "$loop_dir"
     rsync -a --info=progress2 --human-readable --stats "$loop_dir"/ "$MNT_INSTALL"/
+    if [ ! -f "$MNT_INSTALL/bootmgr" ] || [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
+        echo "ERROR: Windows ISO extraction failed; $MNT_INSTALL/bootmgr or $MNT_INSTALL/sources/boot.wim is missing after rsync."
+        dump_checkpoint_state
+        exit 1
+    fi
     checkpoint_set windows_extracted
 }
 
@@ -248,6 +271,11 @@ copy_virtio_media() {
     mkdir -p "$MNT_INSTALL/sources/virtio"
     mount -o loop "$iso" "$loop_dir"
     rsync -a --info=progress2 --human-readable --stats "$loop_dir"/ "$MNT_INSTALL/sources/virtio"/
+    if [ -z "$(find "$MNT_INSTALL/sources/virtio" -type f 2>/dev/null | head -n 1)" ]; then
+        echo "ERROR: VirtIO extraction failed; no files found under $MNT_INSTALL/sources/virtio."
+        dump_checkpoint_state
+        exit 1
+    fi
     checkpoint_set virtio_extracted
 }
 
@@ -543,13 +571,19 @@ EOF
 patch_boot_wim() {
     if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
         echo "WARNING: $MNT_INSTALL/sources/boot.wim not found. Attempting to recover installer media."
+        dump_checkpoint_state
         mount_existing_partitions
         if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
             prepare_windows_media
         fi
     fi
 
-    [ -f "$MNT_INSTALL/sources/boot.wim" ] || { echo "ERROR: boot.wim not found after recovery attempt."; exit 1; }
+    [ -f "$MNT_INSTALL/sources/boot.wim" ] || {
+        echo "ERROR: boot.wim not found after recovery attempt."
+        dump_checkpoint_state
+        ls -la "$MNT_INSTALL/sources" 2>/dev/null || true
+        exit 1
+    }
 
     echo "Inspecting boot.wim images..."
     wimlib-imagex info "$MNT_INSTALL/sources/boot.wim" > /tmp/bootwim_info.txt
