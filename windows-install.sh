@@ -75,7 +75,12 @@ require_root() {
 
 cleanup_mount() {
     local p="$1"
-    mountpoint -q "$p" && umount "$p" || true
+    if mountpoint -q "$p"; then
+        if ! umount "$p"; then
+            echo "WARNING: $p is busy, trying lazy unmount"
+            umount -l "$p" || true
+        fi
+    fi
 }
 
 mount_existing_partitions() {
