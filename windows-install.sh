@@ -112,6 +112,8 @@ CHECK_ONLY=0
 FORCE_DOWNLOAD=0
 USE_ZRAM=0
 NO_PROMPT=0
+UNATTENDED=0
+UNATTENDED_CMD=""
 WINDOWS_ISO_URL_ARG=""
 VIRTIO_ISO_URL_ARG=""
 ORIGINAL_ARGS=("$@")
@@ -132,6 +134,23 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-prompt)
             NO_PROMPT=1
+            shift
+            ;;
+        --unattended)
+            UNATTENDED=1
+            shift
+            ;;
+        --unattended-cmd)
+            if [ "$#" -lt 2 ]; then
+                echo "ERROR: --unattended-cmd requires a value."
+                exit 1
+            fi
+            shift
+            UNATTENDED_CMD="$1"
+            shift
+            ;;
+        --unattended-cmd=*)
+            UNATTENDED_CMD="${1#*=}"
             shift
             ;;
         --windows-iso-url)
@@ -1373,10 +1392,109 @@ EOF
     checkpoint_set "bypass_files"
 }
 
+create_unattended_startnet_cmd() {
+    local output_path="$1"
+
+    if [ -n "${UNATTENDED_CMD:-}" ]; then
+        echo "@echo off" > "$output_path"
+        echo "$UNATTENDED_CMD" >> "$output_path"
+        return
+    fi
+
+    cat > "$output_path" <<'EOF'
+@echo off
+rem Load possible VirtIO storage drivers first
+for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist %%D\sources\virtio\amd64\w11\vioscsi.inf (
+        echo Loading vioscsi driver from %%D\sources\virtio\amd64\w11
+        drvload %%D\sources\virtio\amd64\w11\vioscsi.inf
+        goto :driver_done
+    )
+    if exist %%D\sources\virtio\viostor\2k3\amd64\viostor.inf (
+        echo Loading viostor driver from %%D\sources\virtio\viostor\2k3\amd64
+        drvload %%D\sources\virtio\viostor\2k3\amd64\viostor.inf
+        goto :driver_done
+    )
+)
+echo No VirtIO storage driver found. Proceeding without explicit driver load.
+:driver_done
+rem Run bypass if present
+for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist %%D\sources\bypass.cmd (
+        echo Running bypass from %%D\sources\bypass.cmd
+        call %%D\sources\bypass.cmd
+        goto :done
+    )
+)
+echo bypass.cmd not found on any drive
+:done
+EOF
+}
+
+select_boot_wim_image_index() {
+    if [ ! -f /mnt/sources/boot.wim ]; then
+        echo ""
+        return
+    fi
+    wimlib-imagex info /mnt/sources/boot.wim > /tmp/bootwim_info.txt
+    local image_count
+    image_count=$(grep -c '^Index:' /tmp/bootwim_info.txt || true)
+
+    if [ "$image_count" -ge 2 ]; then
+        auto_image_index=2
+    else
+        auto_image_index=$(awk '
+            BEGIN { first_idx=""; fallback_idx=""; found=0 }
+            /Index:/ { idx=$2; if (first_idx == "") first_idx = idx }
+            /Name:/ {
+                name = substr($0, index($0, $2))
+                lname = tolower(name)
+                if (lname ~ /windows setup/ || lname ~ /microsoft windows setup/ || lname ~ /setup \(amd64\)/) {
+                    print idx
+                    found=1
+                    exit
+                }
+                if (lname ~ /windows pe/ && fallback_idx == "") {
+                    fallback_idx = idx
+                }
+            }
+            END {
+                if (found) exit
+                if (fallback_idx != "") {
+                    print fallback_idx
+                } else if (first_idx != "") {
+                    print first_idx
+                }
+            }
+        ' /tmp/bootwim_info.txt)
+    fi
+    rm -f /tmp/bootwim_info.txt
+    echo "$auto_image_index"
+}
+
 patch_boot_wim() {
     if checkpoint_done "boot_wim_patched"; then
-        echo "boot.wim already patched (checkpoint)."
-        return
+        if [ "$UNATTENDED" -eq 1 ] && [ ! -f /mnt/sources/boot.wim.unattended ]; then
+            echo "boot.wim already patched, but unattended script not yet added. Adding unattended script."
+            if ! command_exists wimlib-imagex; then
+                echo "WARNING: wimlib-imagex not installed. Cannot add unattended startnet.cmd."
+                return
+            fi
+            local boot_image_index
+            boot_image_index=$(select_boot_wim_image_index)
+            if [ -z "$boot_image_index" ]; then
+                echo "ERROR: Unable to determine boot.wim image index for unattended startnet injection."
+                return
+            fi
+            create_unattended_startnet_cmd /tmp/startnet.cmd
+            echo "add /tmp/startnet.cmd /Windows/System32/startnet.cmd" > /tmp/wimcmd.txt
+            wimlib-imagex update /mnt/sources/boot.wim "$boot_image_index" < /tmp/wimcmd.txt
+            rm -f /tmp/wimcmd.txt /tmp/startnet.cmd
+            touch /mnt/sources/boot.wim.unattended
+        else
+            echo "boot.wim already patched (checkpoint)."
+            return
+        fi
     fi
     if [ -f /mnt/sources/boot.wim.virtio_patched ]; then
         echo "boot.wim already patched with VirtIO drivers. Skipping WIM update."
@@ -1437,8 +1555,17 @@ patch_boot_wim() {
     echo "add /mnt/sources/virtio /virtio_drivers" > /tmp/wimcmd.txt
     wimlib-imagex update /mnt/sources/boot.wim "$auto_image_index" < /tmp/wimcmd.txt
     rm -f /tmp/wimcmd.txt
-    touch /mnt/sources/boot.wim.virtio_patched
 
+    if [ "$UNATTENDED" -eq 1 ]; then
+        echo "Adding unattended WinPE startup script to boot.wim..."
+        create_unattended_startnet_cmd /tmp/startnet.cmd
+        echo "add /tmp/startnet.cmd /Windows/System32/startnet.cmd" > /tmp/wimcmd.txt
+        wimlib-imagex update /mnt/sources/boot.wim "$auto_image_index" < /tmp/wimcmd.txt
+        rm -f /tmp/wimcmd.txt /tmp/startnet.cmd
+        touch /mnt/sources/boot.wim.unattended
+    fi
+
+    touch /mnt/sources/boot.wim.virtio_patched
     checkpoint_set "boot_wim_patched"
 }
 
@@ -1479,7 +1606,7 @@ verify_grub_entry() {
     local bios_entry_found=0
     if grep -q 'menuentry "windows installer (BIOS)"' "$cfg_path"; then
         bios_entry_found=1
-    elif grep -qi 'menuentry "windows installer"' "$cfg_path" && grep -q -E 'chainloader /bootmgr|ntldr /bootmgr' "$cfg_path"; then
+    elif grep -qi 'menuentry "windows installer"' "$cfg_path" && grep -q -E 'chainloader /bootmgr|ntldr /bootmgr|chainloader \+1' "$cfg_path"; then
         echo "INFO: Found existing BIOS Windows installer GRUB entry. Accepting existing entry."
         bios_entry_found=1
     fi
@@ -1671,7 +1798,7 @@ EOF
 menuentry "windows installer (BIOS)" {
     insmod ntfs
     search --no-floppy --set=root --file=/bootmgr
-    ntldr /bootmgr
+    chainloader +1
     boot
 }
 EOF
@@ -1716,7 +1843,7 @@ install_grub_if_needed() {
     echo "Installing or updating GRUB on /dev/sda..."
     mkdir -p /mnt/boot/grub
 
-    local grub_args=(--root-directory=/mnt)
+    local grub_args=(--boot-directory=/mnt/boot --recheck)
     if [ -n "${GRUB_INSTALL_TARGET}" ]; then
         grub_args+=(--target="${GRUB_INSTALL_TARGET}")
     fi
@@ -1727,6 +1854,11 @@ install_grub_if_needed() {
     elif ! grub-install "${grub_args[@]}" /dev/sda; then
         echo "grub-install failed. Retrying with --force to allow blocklists on GPT."
         grub-install "${grub_args[@]}" --force /dev/sda
+    fi
+
+    if ! verify_grub_installation_noexit; then
+        echo "GRUB installation appears incomplete. Retrying with --root-directory=/mnt fallback."
+        grub-install --root-directory=/mnt --recheck --target="${GRUB_INSTALL_TARGET}" --force /dev/sda
     fi
 
     verify_grub_installation

@@ -54,6 +54,8 @@ The installer now supports explicit CLI arguments instead of environment variabl
 - `--windows-iso-url <url>` — specify the Windows ISO download URL.
 - `--virtio-iso-url <url>` — specify the VirtIO driver ISO download URL.
 - `--no-prompt` — run non-interactively and avoid prompting for input.
+- `--unattended` — add an unattended WinPE startup script so the installer automatically runs the bypass CMD.
+- `--unattended-cmd <command>` — specify a custom WinPE command to run in unattended mode. If omitted, the script will search for and execute `sources\bypass.cmd`.
 - `--force-download` — force redownload of ISOs and installer media even if files already exist.
 - `--check-only` — run only the preflight compatibility/rescue checks and do not write disk or reboot.
 - `--recreate-disk` — force disk recreation on the next run, converting `/dev/sda` to a BIOS/MBR layout and rebuilding the installer media.
@@ -61,7 +63,11 @@ The installer now supports explicit CLI arguments instead of environment variabl
 
 Example:
 ```bash
-bash windows-install.sh --no-prompt --windows-iso-url "<windows-iso-url>" --virtio-iso-url "<virtio-iso-url>"
+bash windows-install.sh --no-prompt --unattended --windows-iso-url "<windows-iso-url>" --virtio-iso-url "<virtio-iso-url>"
+```
+Example with custom unattended command:
+```bash
+bash windows-install.sh --no-prompt --unattended --unattended-cmd "for %%D in (C D E F G H I J) do if exist %%D\\sources\\bypass.cmd call %%D\\sources\\bypass.cmd"
 ```
 
 4. The script will partition the disk, download Windows 11 and VirtIO drivers, and prepare everything. The VPS will reboot when done.
