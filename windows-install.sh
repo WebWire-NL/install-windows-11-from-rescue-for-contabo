@@ -1080,15 +1080,19 @@ setup_download_environment() {
     fi
 
     AVAILABLE_RAM_MB=0
+    TOTAL_RAM_MB=0
+    USED_RAM_MB=0
     if command_exists free; then
+        TOTAL_RAM_MB=$(free -m | awk '/^Mem:/ {print $2}')
         AVAILABLE_RAM_MB=$(free -m | awk '/^Mem:/ {print $7}')
+        USED_RAM_MB=$((TOTAL_RAM_MB - AVAILABLE_RAM_MB))
     fi
     SAFE_RAM_MB=$((AVAILABLE_RAM_MB - 512))
     if [ "$SAFE_RAM_MB" -lt 0 ]; then
         SAFE_RAM_MB=0
     fi
 
-    echo "Detected available RAM: ${AVAILABLE_RAM_MB}MB"
+    echo "Detected total RAM: ${TOTAL_RAM_MB}MB, used: ${USED_RAM_MB}MB, available: ${AVAILABLE_RAM_MB}MB"
     echo "Reserving 512MB; safe RAM for zram: ${SAFE_RAM_MB}MB"
 
     if [ "${USE_ZRAM:-0}" -eq 0 ] && [ "${WINDOWS_ISO_SIZE:-0}" -gt 0 ] && [ "${VIRTIO_ISO_SIZE:-0}" -gt 0 ] && [ "${TOTAL_ISO_SIZE:-0}" -gt 0 ] && [ "$TOTAL_ISO_SIZE_MB" -le "$SAFE_RAM_MB" ]; then
@@ -1110,9 +1114,15 @@ setup_download_environment() {
         zram_avail_kb=$(df --output=avail /mnt/zram0 2>/dev/null | tail -n1 | tr -d ' ')
         zram_avail_mb=$((zram_avail_kb / 1024))
         if [ "$zram_avail_mb" -lt "$TOTAL_ISO_SIZE_MB" ]; then
-            echo "Existing zram does not have enough free space (${zram_avail_mb}MB) for ${TOTAL_ISO_SIZE_MB}MB. Clearing zram state."
+            echo "Existing zram does not have enough free space (${zram_avail_mb}MB) for ${TOTAL_ISO_SIZE_MB}MB. Resetting zram state."
             cleanup_zram
-            USE_ZRAM=0
+            if [ "$TOTAL_ISO_SIZE_MB" -le "$SAFE_RAM_MB" ]; then
+                echo "Total RAM is sufficient after cleanup; retrying zram allocation."
+                USE_ZRAM=1
+            else
+                echo "Safe RAM is insufficient after zram cleanup; falling back to disk."
+                USE_ZRAM=0
+            fi
         fi
     fi
 
@@ -1148,7 +1158,7 @@ setup_download_environment() {
             USE_ZRAM=0
         fi
     else
-        echo "Using disk fallback for ISO downloads because ISO sizes are unknown or unavailable."
+        echo "Using disk fallback for ISO downloads because zram was not enabled or allocation was not possible."
     fi
 
     if [ "${USE_ZRAM:-0}" -eq 1 ]; then
