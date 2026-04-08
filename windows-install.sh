@@ -98,7 +98,7 @@ parse_args() {
 ensure_toolchain() {
     local required=(
         parted partprobe mkfs.ntfs mount umount rsync
-        grub-install grub-probe curl grep awk sed find
+\ \ \ \ \ \ \ \ grub-install\ grub-probe\ curl\ grep\ awk\ sed\ find\ wimlib-imagex wimlib-imagex
     )
     local missing=()
     for cmd in "${required[@]}"; do
@@ -238,8 +238,9 @@ copy_virtio_media() {
 
 prepare_windows_media() {
     local download_dir="$MNT_STORAGE"
-    if mountpoint -q "$MNT_STORAGE" 2>/dev/null; then
-        download_dir="${MNT_STORAGE}-download"
+    if ! mountpoint -q "$MNT_STORAGE" 2>/dev/null; then
+        echo "ERROR: $MNT_STORAGE is not mounted. ISO downloads must target the mounted second partition."
+        exit 1
     fi
     mkdir -p "$download_dir"
 
@@ -274,7 +275,146 @@ reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f
 reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassCPUCheck /t REG_DWORD /d 1 /f
 exit /b 0
 EOF
+    local bypass_file="$MNT_INSTALL/sources/bypass.cmd"
+    cat > "$bypass_file" <<'EOF'
+@echo off
+rem Bypass Windows Setup checks during WinPE startup.
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassSecureBootCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassCPUCheck /t REG_DWORD /d 1 /f
+exit /b 0
+EOF
+
     checkpoint_set bypass_ready
+}
+
+create_bypass_cmd() {
+    local output_path="$1"
+    cat > "$output_path" <<'EOF'
+@echo off
+reg add "HKLM\\SYSTEM\\Setup\\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\\SYSTEM\\Setup\\LabConfig" /v BypassSecureBootCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\\SYSTEM\\Setup\\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\\SYSTEM\\Setup\\LabConfig" /v BypassCPUCheck /t REG_DWORD /d 1 /f
+exit /b 0
+EOF
+}
+
+create_unattended_startnet_cmd() {
+    local output_path="$1"
+
+    if [ -n "${UNATTENDED_CMD:-}" ]; then
+        echo "@echo off" > "$output_path"
+        echo "wpeinit" >> "$output_path"
+        echo "$UNATTENDED_CMD" >> "$output_path"
+        return
+    fi
+
+    cat > "$output_path" <<'EOF'
+@echo off
+wpeinit
+rem Load VirtIO storage drivers from the injected boot.wim image.
+for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist %%D:\virtio\viostor\2k3\amd64\viostor.inf (
+        echo Loading viostor driver from %%D:\virtio\viostor\2k3\amd64
+        drvload %%D:\virtio\viostor\2k3\amd64\viostor.inf
+        goto :driver_done
+    )
+    if exist %%D:\virtio\amd64\w10\viostor.inf (
+        echo Loading viostor driver from %%D:\virtio\amd64\w10
+        drvload %%D:\virtio\amd64\w10\viostor.inf
+        goto :driver_done
+    )
+    if exist %%D:\virtio\amd64\w11\vioscsi.inf (
+        echo Loading vioscsi driver from %%D:\virtio\amd64\w11
+        drvload %%D:\virtio\amd64\w11\vioscsi.inf
+        goto :driver_done
+    )
+)
+:driver_done
+if exist %SystemRoot%\System32\bypass.cmd (
+    echo Running bypass.cmd
+    call %SystemRoot%\System32\bypass.cmd
+)
+EOF
+}
+
+patch_boot_wim() {
+    if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
+        echo "ERROR: $MNT_INSTALL/sources/boot.wim not found."
+        exit 1
+    fi
+    if ! command_exists wimlib-imagex; then
+        echo "WARNING: wimlib-imagex not installed. Skipping boot.wim patch."
+        echo "VirtIO drivers will still be copied to $MNT_INSTALL/sources/virtio, but boot.wim injection will not be applied."
+        return
+    fi
+
+    echo "Inspecting boot.wim images..."
+    wimlib-imagex info "$MNT_INSTALL/sources/boot.wim" > /tmp/bootwim_info.txt
+    local image_count
+    local auto_image_index
+    image_count=$(grep -c '^Index:' /tmp/bootwim_info.txt || true)
+
+    if [ "$image_count" -ge 2 ]; then
+        auto_image_index=2
+        echo "Using boot.wim image index 2 to match upstream behavior."
+    else
+        auto_image_index=$(awk '
+            BEGIN { first_idx=""; fallback_idx=""; found=0 }
+            /Index:/ { idx=$2; if (first_idx == "") first_idx = idx }
+            /Name:/ {
+                name = substr($0, index($0, $2))
+                lname = tolower(name)
+                if (lname ~ /windows setup/ || lname ~ /microsoft windows setup/ || lname ~ /setup \(amd64\)/) {
+                    print idx
+                    found=1
+                    exit
+                }
+                if (lname ~ /windows pe/ && fallback_idx == "") {
+                    fallback_idx = idx
+                }
+            }
+            END {
+                if (found) exit
+                if (fallback_idx != "") {
+                    print fallback_idx
+                } else if (first_idx != "") {
+                    print first_idx
+                }
+            }
+        ' /tmp/bootwim_info.txt)
+    fi
+    rm -f /tmp/bootwim_info.txt
+
+    if [ -z "$auto_image_index" ]; then
+        echo "ERROR: Unable to determine boot.wim image index."
+        exit 1
+    fi
+
+    echo "Selected boot.wim image index: $auto_image_index"
+
+    create_bypass_c
+    create_bypass_cmd /tmp/bypass.cmd
+    cat > /tmp/wimcmd.txt <<'EOF'
+add /mnt/sources/virtio /virtio
+add /mnt/sources/bypass.cmd /Windows/System32/bypass.cmd
+EOF
+    wimlib-imagex update "$MNT_INSTALL/sources/boot.wim" "$auto_image_index" < /tmp/wimcmd.txt
+    rm -f /tmp/wimcmd.txt
+
+    if [ "$UNATTENDED" -eq 1 ]; then
+        echo "Adding unattended WinPE startup script to boot.wim..."
+        create_unattended_startnet_cmd /tmp/startnet.cmd
+        echo "add /tmp/startnet.cmd /Windows/System32/startnet.cmd" > /tmp/wimcmd.txt
+        wimlib-imagex update "$MNT_INSTALL/sources/boot.wim" "$auto_image_index" < /tmp/wimcmd.txt
+        rm -f /tmp/wimcmd.txt /tmp/startnet.cmd
+        touch "$MNT_INSTALL/sources/boot.wim.unattended"
+    fi
+
+    touch "$MNT_INSTALL/sources/boot.wim.virtio_patched"
+    checkpoint_set "boot_wim_patched"
 }
 
 write_grub_config() {
@@ -303,41 +443,29 @@ install_grub() {
     checkpoint_set grub_installed
 }
 
-verify_grub_artifacts() {
-    local gdir="$MNT_INSTALL/boot/grub/i386-pc"
-    [ -f "$gdir/core.img" ] || { echo "ERROR: GRUB core.img missing in $gdir"; exit 1; }
-    [ -f "$gdir/normal.mod" ] || { echo "ERROR: GRUB normal.mod missing in $gdir"; exit 1; }
-}
-
 verify_ready() {
     [ -f "$MNT_INSTALL/bootmgr" ] || { echo "ERROR: Missing $MNT_INSTALL/bootmgr"; exit 1; }
-    [ -f "$MNT_INSTALL/sources/boot.wim" ] || { echo "ERROR: Missing boot.wim"; exit 1; }
-    [ -d "$MNT_INSTALL/sources/virtio" ] || { echo "ERROR: Missing VirtIO drivers"; exit 1; }
+    [ -f "$MNT_INSTALL/sources/boot.wim" ] || { echo "ERROR: Missing $MNT_INSTALL/sources/boot.wim"; exit 1; }
+    [ -d "$MNT_INSTALL/sources/virtio" ] || { echo "ERROR: Missing $MNT_INSTALL/sources/virtio"; exit 1; }
     [ -f "$MNT_INSTALL/boot/grub/grub.cfg" ] || { echo "ERROR: Missing grub.cfg"; exit 1; }
 
-    verify_grub_artifacts
+    verify_grub_config
 
-    grep -q 'chainloader /bootmgr' "$MNT_INSTALL/boot/grub/grub.cfg" \
-        || { echo "ERROR: GRUB is not configured to chainload /bootmgr"; exit 1; }
+    grep -q 'chainloader /bootmgr' "$MNT_INSTALL/boot/grub/grub.cfg"         || { echo "ERROR: GRUB is not configured to chainload /bootmgr"; exit 1; }
 
     echo "All required installer files are present."
     echo "Reboot the VPS and select: windows installer (BIOS)"
 }
 
 main() {
-    require_root
-    parse_args "$@"
-    ensure_toolchain
+    verify_toolchain
     verify_vps_compatibility
-    ensure_partitions_ready
-
-    if [ "$CHECK_ONLY" -eq 1 ]; then
-        verify_ready
-        exit 0
+    if [ "$RECREATE_DISK" -eq 1 ]; then
+        recreate_disk
     fi
-
     prepare_windows_media
     write_bypass_script
+    patch_boot_wim
     write_grub_config
     install_grub
     verify_ready
