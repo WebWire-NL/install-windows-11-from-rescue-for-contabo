@@ -678,8 +678,7 @@ verify_vps_compatibility() {
     fi
 
     if [ "${disk_label}" = "unknown" ]; then
-        echo "ERROR: Unable to detect disk label type. Ensure parted is installed and /dev/sda is accessible."
-        exit 1
+        echo "WARNING: Unable to detect disk label type. A blank disk or missing partition table is acceptable; continuing with a fresh installer layout."
     fi
 
     echo "Compatibility check complete."
@@ -1185,30 +1184,38 @@ patch_boot_wim() {
     fi
     echo "Inspecting boot.wim images..."
     wimlib-imagex info /mnt/sources/boot.wim > /tmp/bootwim_info.txt
-    auto_image_index=$(awk '
-        BEGIN { first_idx=""; fallback_idx=""; found=0 }
-        /Index:/ { idx=$2; if (first_idx == "") first_idx = idx }
-        /Name:/ {
-            name = substr($0, index($0, $2))
-            lname = tolower(name)
-            if (lname ~ /windows setup/ || lname ~ /microsoft windows setup/ || lname ~ /setup \(amd64\)/) {
-                print idx
-                found=1
-                exit
+    local image_count
+    image_count=$(grep -c '^Index:' /tmp/bootwim_info.txt || true)
+
+    if [ "$image_count" -ge 2 ]; then
+        auto_image_index=2
+        echo "Using boot.wim image index 2 to match upstream behavior."
+    else
+        auto_image_index=$(awk '
+            BEGIN { first_idx=""; fallback_idx=""; found=0 }
+            /Index:/ { idx=$2; if (first_idx == "") first_idx = idx }
+            /Name:/ {
+                name = substr($0, index($0, $2))
+                lname = tolower(name)
+                if (lname ~ /windows setup/ || lname ~ /microsoft windows setup/ || lname ~ /setup \(amd64\)/) {
+                    print idx
+                    found=1
+                    exit
+                }
+                if (lname ~ /windows pe/ && fallback_idx == "") {
+                    fallback_idx = idx
+                }
             }
-            if (lname ~ /windows pe/ && fallback_idx == "") {
-                fallback_idx = idx
+            END {
+                if (found) exit
+                if (fallback_idx != "") {
+                    print fallback_idx
+                } else if (first_idx != "") {
+                    print first_idx
+                }
             }
-        }
-        END {
-            if (found) exit
-            if (fallback_idx != "") {
-                print fallback_idx
-            } else if (first_idx != "") {
-                print first_idx
-            }
-        }
-    ' /tmp/bootwim_info.txt)
+        ' /tmp/bootwim_info.txt)
+    fi
     rm -f /tmp/bootwim_info.txt
 
     if [ -z "$auto_image_index" ]; then
@@ -1216,7 +1223,7 @@ patch_boot_wim() {
         exit 1
     fi
 
-    echo "Auto-selected boot.wim image index: $auto_image_index"
+    echo "Selected boot.wim image index: $auto_image_index"
     echo "add /mnt/sources/virtio /virtio_drivers" > /tmp/wimcmd.txt
     wimlib-imagex update /mnt/sources/boot.wim "$auto_image_index" < /tmp/wimcmd.txt
     rm -f /tmp/wimcmd.txt
