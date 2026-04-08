@@ -472,7 +472,13 @@ manual_rescue_verification() {
 
     if [ -f /mnt/boot/grub/grub.cfg ]; then
         echo "- /mnt/boot/grub/grub.cfg is present"
-        check_grub_config_noexit || failed=1
+        if ! check_grub_config_noexit; then
+            if [ "$CHECK_ONLY" -eq 1 ]; then
+                echo "WARNING: GRUB config is invalid or incomplete, but this can be fixed during install preparation."
+            else
+                failed=1
+            fi
+        fi
     else
         if [ "$CHECK_ONLY" -eq 1 ]; then
             echo "WARNING: /mnt/boot/grub/grub.cfg is missing"
