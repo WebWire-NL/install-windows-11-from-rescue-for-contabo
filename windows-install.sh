@@ -108,7 +108,6 @@ self_update_script() {
 }
 
 RECREATE_DISK=0
-RESET_ZRAM=0
 CHECK_ONLY=0
 FORCE_DOWNLOAD=0
 USE_ZRAM=0
@@ -117,10 +116,6 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --recreate-disk)
             RECREATE_DISK=1
-            shift
-            ;;
-        --reset-zram)
-            RESET_ZRAM=1
             shift
             ;;
         --check-only)
@@ -634,10 +629,11 @@ detect_auto_repair_flags() {
         RECREATE_DISK=1
     fi
 
-    if [ "$RESET_ZRAM" -eq 0 ] && mountpoint -q /mnt/zram0 2>/dev/null; then
+    if mountpoint -q /mnt/zram0 2>/dev/null; then
         if [ ! -f /mnt/zram0/windisk/Windows.iso ] && [ ! -f /mnt/zram0/windisk/VirtIO.iso ]; then
             echo "Auto-detected stale zram mount with no ISO files. Resetting zram state."
-            RESET_ZRAM=1
+            cleanup_zram
+            USE_ZRAM=0
         fi
     fi
 }
@@ -900,15 +896,6 @@ print_current_state() {
 
 setup_download_environment() {
     print_current_state
-    if [ "$RESET_ZRAM" -eq 1 ]; then
-        echo "--reset-zram requested; clearing existing zram state before downloading."
-        cleanup_zram
-        USE_ZRAM=0
-        WINDOWS_ISO=""
-        VIRTIO_ISO=""
-        WINDOWS_ISO_SIZE=0
-        VIRTIO_ISO_SIZE=0
-    fi
 
     if [ "$FORCE_DOWNLOAD" -eq 1 ]; then
         echo "--force-download requested; prompting for new ISO URLs and ignoring existing /mnt installer media."
