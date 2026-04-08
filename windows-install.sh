@@ -545,9 +545,9 @@ get_disk_label() {
     fi
 
     local label
-    set +e
-    label=$(parted /dev/sda --script print 2>/dev/null | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')
-    set -e
+    if ! label=$(parted /dev/sda --script print 2>/dev/null | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]'); then
+        label=""
+    fi
 
     if [ -z "$label" ]; then
         echo "unknown"
