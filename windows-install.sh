@@ -262,6 +262,7 @@ prepare_windows_media() {
     if ! checkpoint_done virtio_extracted; then
         copy_virtio_media "$virtio_iso"
     fi
+    write_autounattend_xml
 }
 
 write_bypass_script() {
@@ -287,6 +288,48 @@ exit /b 0
 EOF
 
     checkpoint_set bypass_ready
+}
+
+write_autounattend_xml() {
+    local output_path="$MNT_INSTALL/Autounattend.xml"
+
+    cat > "$output_path" <<'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <DiskConfiguration>
+        <Disk>
+          <DiskID>0</DiskID>
+          <WillWipeDisk>false</WillWipeDisk>
+          <ModifyPartitions>
+            <ModifyPartition>
+              <Order>1</Order>
+              <PartitionID>1</PartitionID>
+              <Label>Windows</Label>
+              <Format>NTFS</Format>
+              <Type>Primary</Type>
+              <Active>true</Active>
+            </ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>
+      <ImageInstall>
+        <OSImage>
+          <InstallTo>
+            <DiskID>0</DiskID>
+            <PartitionID>1</PartitionID>
+          </InstallTo>
+          <InstallToAvailablePartition>false</InstallToAvailablePartition>
+        </OSImage>
+      </ImageInstall>
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+      </UserData>
+    </component>
+  </settings>
+</unattend>
+EOF
 }
 
 create_bypass_cmd() {
@@ -395,7 +438,6 @@ patch_boot_wim() {
 
     echo "Selected boot.wim image index: $auto_image_index"
 
-    create_bypass_c
     create_bypass_cmd /tmp/bypass.cmd
     cat > /tmp/wimcmd.txt <<'EOF'
 add /mnt/sources/virtio /virtio

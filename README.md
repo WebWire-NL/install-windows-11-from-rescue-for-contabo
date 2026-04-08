@@ -6,7 +6,8 @@ Automated script and instructions to install Windows 11 on a Contabo VPS from th
 ## Features
 - Fully automated disk partitioning and formatting
 - Downloads and prepares the official Windows 11 evaluation ISO
-- Integrates VirtIO drivers for disk and network support
+- Creates the Windows install target on Disk 0 Partition 1 and configures unattended setup to install to that partition automatically via `Autounattend.xml`
+- Integrates VirtIO drivers for disk and network support, including Windows 11 `vioscsi\w11\amd64` and `NetKVM\w11\amd64`
 - Adds registry and batch files to bypass Windows 11 hardware checks (TPM, RAM, Secure Boot)
 - Can be used with any QEMU-based rescue system that supports our target rescue-spec setup, including pulling the ISO directly if needed
 
@@ -70,7 +71,7 @@ Example with custom unattended command:
 bash windows-install.sh --no-prompt --unattended --unattended-cmd "for %%D in (C D E F G H I J) do if exist %%D\\sources\\bypass.cmd call %%D\\sources\\bypass.cmd"
 ```
 
-4. The script will partition the disk, download Windows 11 and VirtIO drivers, and prepare everything. The VPS will reboot when done.
+4. The script will partition the disk, download Windows 11 and VirtIO drivers, generate `Autounattend.xml`, and prepare everything. The VPS will reboot when done.
 
 ### 5. Complete Windows 11 Installation via VNC
 1. In the Contabo panel, get your VNC connection info and connect with VNC Viewer.
@@ -89,8 +90,9 @@ bash windows-install.sh --no-prompt --unattended --unattended-cmd "for %%D in (C
    ![Windows 11 setup choose VirtIO path](docs/screenshots/choose_virtio_path.png)
 
 4. Once the storage driver is loaded, the installer should show your target disk.
-   - If you are installing Windows to the first partition, delete and recreate that partition inside the installer before installing.
-5. If you need to apply bypass files, press `Shift+F10` to open Command Prompt and run:
+   - The script prepares Windows Setup to install automatically to Disk 0 Partition 1, so manual partition selection should not be required.
+   - If the disk is not visible, use the storage driver fallback below.
+5. If you need to apply bypass files or support unsupported hardware checks, press `Shift+F10` to open Command Prompt and run:
    ```cmd
    cd <installer-drive-letter>:\sources
    bypass.cmd
