@@ -318,6 +318,13 @@ prepare_windows_media() {
         copy_virtio_media "$virtio_iso"
     fi
 
+    if checkpoint_done boot_wim_patched; then
+        if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
+            echo "WARNING: boot_wim_patched checkpoint is stale; clearing patch checkpoint."
+            rm -f "$STATE_DIR/boot_wim_patched"
+        fi
+    fi
+
     write_ei_cfg
     write_autounattend_xml
 }
