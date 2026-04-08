@@ -2,6 +2,7 @@
 set -euo pipefail
 
 NO_PROMPT=0
+FORCE_DOWNLOAD=0
 ISO_URL=""
 VIRTIO_ISO_URL=""
 WINDOWS_ISO_MD5=""
@@ -13,11 +14,15 @@ while [[ "$#" -gt 0 ]]; do
             NO_PROMPT=1
             shift
             ;;
-        --iso-url)
+        --force-download)
+            FORCE_DOWNLOAD=1
+            shift
+            ;;
+        --iso-url|--windows-iso-url)
             ISO_URL="$2"
             shift 2
             ;;
-        --virtio-url)
+        --virtio-url|--virtio-iso-url)
             VIRTIO_ISO_URL="$2"
             shift 2
             ;;
@@ -345,6 +350,11 @@ fi
 mkdir -p "$DOWNLOAD_DIR"
 WINDOWS_ISO="$DOWNLOAD_DIR/Windows.iso"
 VIRTIO_ISO="$DOWNLOAD_DIR/VirtIO.iso"
+
+if [[ "$FORCE_DOWNLOAD" -eq 1 ]]; then
+    echo "Force download enabled; removing any existing ISOs." 
+    rm -f "$WINDOWS_ISO" "$VIRTIO_ISO"
+fi
 
 if [[ -f "$WINDOWS_ISO" ]]; then
     echo "Removing existing Windows ISO at $WINDOWS_ISO"
