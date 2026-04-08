@@ -488,22 +488,26 @@ manual_rescue_verification() {
         fi
     fi
 
-    if verify_grub_installation_noexit >/dev/null 2>&1; then
-        echo "- GRUB installation artifacts appear valid"
+    if [ "$CHECK_ONLY" -eq 1 ]; then
+        echo "WARNING: Skipping GRUB installation and probe validation in check-only mode for fresh disk."
     else
-        echo "ERROR: GRUB installation artifacts are incomplete or invalid"
-        failed=1
-    fi
-
-    if command_exists grub-probe; then
-        if grub-probe --target=fs /mnt >/dev/null 2>&1 && grub-probe --target=device /mnt >/dev/null 2>&1; then
-            echo "- grub-probe can resolve /mnt filesystem and device"
+        if verify_grub_installation_noexit >/dev/null 2>&1; then
+            echo "- GRUB installation artifacts appear valid"
         else
-            echo "ERROR: grub-probe failed to resolve /mnt"
+            echo "ERROR: GRUB installation artifacts are incomplete or invalid"
             failed=1
         fi
-    else
-        echo "WARNING: grub-probe unavailable; skipping probe validation"
+
+        if command_exists grub-probe; then
+            if grub-probe --target=fs /mnt >/dev/null 2>&1 && grub-probe --target=device /mnt >/dev/null 2>&1; then
+                echo "- grub-probe can resolve /mnt filesystem and device"
+            else
+                echo "ERROR: grub-probe failed to resolve /mnt"
+                failed=1
+            fi
+        else
+            echo "WARNING: grub-probe unavailable; skipping probe validation"
+        fi
     fi
 
     if [ "$failed" -eq 0 ]; then
