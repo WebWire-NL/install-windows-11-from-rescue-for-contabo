@@ -734,7 +734,9 @@ setup_partitions_and_mounts() {
             return
         fi
 
-        if [ "$(parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')" = "gpt" ] && ! has_bios_boot_partition; then
+        local disk_label
+        disk_label=$(get_disk_label)
+        if [ "$disk_label" = "gpt" ] && ! has_bios_boot_partition; then
             echo "WARNING: /dev/sda is GPT without a BIOS boot partition."
             echo "         This layout is unsafe for BIOS GRUB boot. The script will recreate /dev/sda as MBR automatically."
             RECREATE_DISK=1
@@ -753,7 +755,16 @@ setup_partitions_and_mounts() {
         cleanup_partition_state
     fi
 
-    disk_size_gb=$(parted /dev/sda --script print | awk '/^Disk \/dev\/sda:/ {print int($3)}')
+    local disk_size_output
+    if ! disk_size_output=$(parted /dev/sda --script print 2>/dev/null | awk '/^Disk \/dev\/sda:/ {print int($3)}'); then
+        echo "ERROR: Unable to read /dev/sda size. Ensure the disk is accessible."
+        exit 1
+    fi
+    disk_size_gb=${disk_size_output:-0}
+    if [ "$disk_size_gb" -eq 0 ]; then
+        echo "ERROR: Invalid disk size detected for /dev/sda."
+        exit 1
+    fi
     disk_size_mb=$((disk_size_gb * 1024))
     part_size_mb=$((disk_size_mb / 2))
 
