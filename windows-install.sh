@@ -824,13 +824,19 @@ setup_partitions_and_mounts() {
     fi
 
     local disk_size_output
-    if ! disk_size_output=$(parted /dev/sda --script print 2>/dev/null | awk '/^Disk \/dev\/sda:/ {print int($3)}'); then
-        echo "ERROR: Unable to read /dev/sda size. Ensure the disk is accessible."
-        exit 1
+    disk_size_output=$(parted /dev/sda --script print 2>/dev/null | awk '/^Disk \/dev\/sda:/ {print int($3)}' || true)
+    if [ -z "${disk_size_output:-}" ] || [ "${disk_size_output:-0}" -eq 0 ]; then
+        if command_exists blockdev; then
+            local disk_size_bytes
+            disk_size_bytes=$(blockdev --getsize64 /dev/sda 2>/dev/null || true)
+            if [ -n "${disk_size_bytes:-}" ] && [ "$disk_size_bytes" -gt 0 ]; then
+                disk_size_output=$((disk_size_bytes / 1024 / 1024 / 1024))
+            fi
+        fi
     fi
     disk_size_gb=${disk_size_output:-0}
     if [ "$disk_size_gb" -eq 0 ]; then
-        echo "ERROR: Invalid disk size detected for /dev/sda."
+        echo "ERROR: Unable to read /dev/sda size. Ensure the disk is accessible."
         exit 1
     fi
     disk_size_mb=$((disk_size_gb * 1024))
