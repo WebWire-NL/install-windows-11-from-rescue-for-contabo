@@ -869,8 +869,8 @@ setup_partitions_and_mounts() {
     partprobe /dev/sda
     sleep 3
 
-    mount /dev/sda1 /mnt
-    mount /dev/sda2 /root/windisk
+    mount /dev/sda2 /mnt
+    mount /dev/sda1 /root/windisk
 
     if ! lsblk /dev/sda1 >/dev/null 2>&1 || ! lsblk /dev/sda2 >/dev/null 2>&1; then
         echo "ERROR: partitions were not created or formatted successfully."
@@ -1493,13 +1493,13 @@ verify_grub_probe() {
 mount_existing_partitions() {
     mkdir -p /mnt /root/windisk
 
-    if ! mountpoint -q /mnt && [ -b /dev/sda1 ]; then
-        echo "Mounting existing /dev/sda1 at /mnt for validation..."
-        mount /dev/sda1 /mnt 2>/dev/null || true
+    if ! mountpoint -q /mnt && [ -b /dev/sda2 ]; then
+        echo "Mounting existing /dev/sda2 at /mnt for validation..."
+        mount /dev/sda2 /mnt 2>/dev/null || true
     fi
-    if ! mountpoint -q /root/windisk && [ -b /dev/sda2 ]; then
-        echo "Mounting existing /dev/sda2 at /root/windisk for validation..."
-        mount /dev/sda2 /root/windisk 2>/dev/null || true
+    if ! mountpoint -q /root/windisk && [ -b /dev/sda1 ]; then
+        echo "Mounting existing /dev/sda1 at /root/windisk for validation..."
+        mount /dev/sda1 /root/windisk 2>/dev/null || true
     fi
 }
 
