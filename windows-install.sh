@@ -787,16 +787,16 @@ setup_partitions_and_mounts() {
     if mountpoint -q /mnt; then
         echo "/mnt already mounted"
     else
-        mount /dev/sda1 /mnt 2>/dev/null || true
+        mount /dev/sda2 /mnt 2>/dev/null || true
     fi
     if mountpoint -q /root/windisk; then
         echo "/root/windisk already mounted"
     else
-        mount /dev/sda2 /root/windisk 2>/dev/null || true
+        mount /dev/sda1 /root/windisk 2>/dev/null || true
     fi
 
     if [ "$RECREATE_DISK" -eq 0 ]; then
-        if mount | grep -qE '^/dev/sda1 on /mnt ' && mount | grep -qE '^/dev/sda2 on /root/windisk '; then
+        if mount | grep -qE '^/dev/sda2 on /mnt ' && mount | grep -qE '^/dev/sda1 on /root/windisk '; then
             echo "Existing partitions are already mounted; skipping partition recreation."
             checkpoint_set "partitions"
             return
