@@ -55,6 +55,81 @@ echo "Using VirtIO ISO URL: $VIRTIO_ISO_URL"
 # Enable strict mode for safer script execution
 set -euo pipefail
 
+package_for_command() {
+    case "$1" in
+        mkfs.ntfs) echo ntfs-3g ;;
+        mkfs.ext4) echo e2fsprogs ;;
+        grub-install|grub-probe) echo grub-pc ;;
+        git) echo git ;;
+        aria2c) echo aria2 ;;
+        wget) echo wget ;;
+        rsync) echo rsync ;;
+        parted|partprobe) echo parted ;;
+        gdisk) echo gdisk ;;
+        curl) echo curl ;;
+        *) echo "" ;;
+    esac
+}
+
+install_packages_for_commands() {
+    local cmd pkg
+    local packages=()
+    local pkg_seen=""
+
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo "ERROR: apt-get is required to install missing packages."
+        exit 1
+    fi
+
+    for cmd in "$@"; do
+        pkg=$(package_for_command "$cmd")
+        if [ -n "$pkg" ]; then
+            if ! printf '%s\n' $pkg_seen | grep -Fxq "$pkg" 2>/dev/null; then
+                pkg_seen="$pkg_seen $pkg"
+                packages+=("$pkg")
+            fi
+        fi
+    done
+
+    if [ "${#packages[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    echo "Installing missing packages: ${packages[*]}"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y --no-install-recommends "${packages[@]}"
+}
+
+ensure_required_tools() {
+    local required=(curl awk grep rsync parted partprobe mkfs.ntfs mkfs.ext4 mount umount grub-install grub-probe git aria2c wget gdisk)
+    local missing=()
+    local cmd
+
+    for cmd in "${required[@]}"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing+=("$cmd")
+        fi
+    done
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        install_packages_for_commands "${missing[@]}"
+        missing=()
+        for cmd in "${required[@]}"; do
+            if ! command -v "$cmd" >/dev/null 2>&1; then
+                missing+=("$cmd")
+            fi
+        done
+    fi
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "ERROR: Missing required commands after installation: ${missing[*]}"
+        exit 1
+    fi
+}
+
+ensure_required_tools
+
 # Ensure all /dev/sda partitions are unmounted and swap is off before partitioning
 echo "Deactivating swap and unmounting all /dev/sda partitions..."
 swapoff -a
