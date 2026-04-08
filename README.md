@@ -55,8 +55,9 @@ The installer now supports explicit CLI arguments instead of environment variabl
 - `--virtio-iso-url <url>` — specify the VirtIO driver ISO download URL.
 - `--no-prompt` — run non-interactively and avoid prompting for input.
 - `--force-download` — force redownload of ISOs and installer media even if files already exist.
-- `--check-only` — run only the preflight compatibility/rescue checks.
-- `--recreate-disk` — force disk recreation on the next run.
+- `--check-only` — run only the preflight compatibility/rescue checks and do not write disk or reboot.
+- `--recreate-disk` — force disk recreation on the next run, converting `/dev/sda` to a BIOS/MBR layout and rebuilding the installer media.
+- `--no-self-update` — internal helper used when the script reruns itself after downloading the latest version; normally do not use this manually.
 
 Example:
 ```bash
