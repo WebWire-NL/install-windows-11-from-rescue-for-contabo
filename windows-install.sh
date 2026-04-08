@@ -543,7 +543,17 @@ get_disk_label() {
         echo "unknown"
         return
     fi
-    parted /dev/sda --script print | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]'
+
+    local label
+    set +e
+    label=$(parted /dev/sda --script print 2>/dev/null | awk -F: '/^Partition Table/ {print $2}' | tr -d '[:space:]')
+    set -e
+
+    if [ -z "$label" ]; then
+        echo "unknown"
+    else
+        echo "$label"
+    fi
 }
 
 report_rescue_state() {
