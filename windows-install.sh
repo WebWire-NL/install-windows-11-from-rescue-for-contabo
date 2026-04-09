@@ -93,6 +93,7 @@ cleanup_mount() {
                 else
                     fuser -km "$p" 2>/dev/null || true
                 fi
+                umount -f "$p" || true
                 umount -l "$p" || true
             fi
         fi
