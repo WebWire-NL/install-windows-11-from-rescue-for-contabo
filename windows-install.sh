@@ -327,6 +327,39 @@ verify_partition_layout() {
     mountpoint -q "$MNT_STORAGE" || fail "$MNT_STORAGE is not mounted"
 }
 
+get_content_length() {
+    local url="$1"
+    local size
+    local ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+    if command_exists curl; then
+        size=$(curl -fsSLI -A "$ua" --compressed --max-redirs 10 "$url" 2>/dev/null | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '
+' | tail -n1)
+        if [ -n "$size" ]; then
+            echo "$size"
+            return 0
+        fi
+
+        size=$(curl -fsSL -A "$ua" --compressed --max-redirs 10 -r 0-0 -D - -o /dev/null "$url" 2>/dev/null | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '
+' | tail -n1)
+        if [ -n "$size" ]; then
+            echo "$size"
+            return 0
+        fi
+    fi
+
+    if command_exists wget; then
+        size=$(wget --spider --server-response --max-redirect=20 --header="User-Agent: $ua" "$url" 2>&1 | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '
+' | tail -n1)
+        if [ -n "$size" ]; then
+            echo "$size"
+            return 0
+        fi
+    fi
+
+    echo ""
+}
+
 choose_download_dir() {
     if mountpoint -q "$MNT_STORAGE" 2>/dev/null; then
         echo "$MNT_STORAGE"
