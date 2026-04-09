@@ -96,6 +96,20 @@ cleanup_mount() {
                 umount -f "$p" || true
                 umount -l "$p" || true
             fi
+            if mountpoint -q "$p"; then
+                echo "WARNING: $p still appears mounted after force unmount; killing helper processes"
+                if command_exists pgrep; then
+                    local helper_pids
+                    helper_pids=$(pgrep -f "mount.ntfs .* $p" 2>/dev/null || true)
+                    if [ -n "$helper_pids" ]; then
+                        echo "Killing helper processes: $helper_pids"
+                        kill -TERM $helper_pids 2>/dev/null || true
+                        sleep 1
+                    fi
+                fi
+                umount -f "$p" || true
+                umount -l "$p" || true
+            fi
         fi
     fi
 }
