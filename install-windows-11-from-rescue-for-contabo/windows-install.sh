@@ -323,14 +323,14 @@ retry_download() {
 WINDOWS_ISO_URL="$ISO_URL"
 
 TOTAL_ISO_SIZE_BYTES=0
-WINDOWS_ISO_SIZE=$(curl -sI "$WINDOWS_ISO_URL" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1)
+WINDOWS_ISO_SIZE=$(curl -sSLI --max-redirs 10 "$WINDOWS_ISO_URL" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1)
 if [[ -z "$WINDOWS_ISO_SIZE" ]]; then
     echo "ERROR: Unable to determine Windows ISO size from HTTP headers."
     exit 1
 fi
 
 VIRTIO_ISO_URL="$VIRTIO_ISO_URL"
-VIRTIO_ISO_SIZE=$(curl -sI "$VIRTIO_ISO_URL" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1)
+VIRTIO_ISO_SIZE=$(curl -sSLI --max-redirs 10 "$VIRTIO_ISO_URL" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1)
 if [[ -z "$VIRTIO_ISO_SIZE" ]]; then
     echo "ERROR: Unable to determine VirtIO ISO size from HTTP headers."
     exit 1
