@@ -2,6 +2,8 @@
 # ALTERNATE SCRIPT: alternate copy with auto-install dependency helper
 set -euo pipefail
 
+STATE_DIR="/root/.wininstall-state"
+
 NO_PROMPT=0
 FORCE_DOWNLOAD=0
 CHECK_ONLY=0
@@ -9,6 +11,55 @@ ISO_URL=""
 VIRTIO_ISO_URL=""
 WINDOWS_ISO_MD5=""
 VIRTIO_ISO_MD5=""
+
+checkpoint_done() { [ -f "$STATE_DIR/$1" ]; }
+checkpoint_set() { mkdir -p "$STATE_DIR" && touch "$STATE_DIR/$1"; }
+
+is_existing_iso_valid() {
+    local file="$1"
+    local url="$2"
+    if [[ ! -f "$file" || ! -s "$file" ]]; then
+        return 1
+    fi
+
+    if [[ -n "$url" ]]; then
+        local expected
+        if expected=$(get_content_length "$url" 2>/dev/null); then
+            if [[ -n "$expected" ]]; then
+                local actual
+                actual=$(stat -c%s "$file")
+                [[ "$actual" -eq "$expected" ]]
+                return
+            fi
+        fi
+    fi
+
+    return 0
+}
+
+prepare_existing_isos() {
+    if [[ "$FORCE_DOWNLOAD" -eq 1 ]]; then
+        return 0
+    fi
+
+    if is_existing_iso_valid "$WINDOWS_ISO_DEST" "$WINDOWS_ISO_URL"; then
+        WINDOWS_ISO="$WINDOWS_ISO_DEST"
+        WINDOWS_ISO_SIZE=$(stat -c%s "$WINDOWS_ISO_DEST")
+        echo "Reusing existing Windows ISO at $WINDOWS_ISO_DEST"
+    fi
+
+    if is_existing_iso_valid "$VIRTIO_ISO_DEST" "$VIRTIO_ISO_URL"; then
+        VIRTIO_ISO="$VIRTIO_ISO_DEST"
+        VIRTIO_ISO_SIZE=$(stat -c%s "$VIRTIO_ISO_DEST")
+        echo "Reusing existing VirtIO ISO at $VIRTIO_ISO_DEST"
+    fi
+}
+
+mark_downloads_checkpoint() {
+    if [[ -f "$WINDOWS_ISO_DEST" && -s "$WINDOWS_ISO_DEST" && -f "$VIRTIO_ISO_DEST" && -s "$VIRTIO_ISO_DEST" ]]; then
+        checkpoint_set downloads_completed
+    fi
+}
 
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -485,18 +536,35 @@ retry_download() {
 
 WINDOWS_ISO_URL="$ISO_URL"
 
+WINDOWS_ISO_DEST="/root/windisk/Windows.iso"
+VIRTIO_ISO_DEST="/root/windisk/VirtIO.iso"
+WINDOWS_ISO="$WINDOWS_ISO_DEST"
+VIRTIO_ISO="$VIRTIO_ISO_DEST"
+
+mkdir -p "$STATE_DIR"
+prepare_existing_isos
+
 TOTAL_ISO_SIZE_BYTES=0
-WINDOWS_ISO_SIZE=$(get_content_length "$WINDOWS_ISO_URL")
-if [[ -z "$WINDOWS_ISO_SIZE" ]]; then
-    echo "ERROR: Unable to determine Windows ISO size from HTTP headers."
-    exit 1
+if [[ -z "${WINDOWS_ISO_SIZE:-}" ]]; then
+    WINDOWS_ISO_SIZE=$(get_content_length "$WINDOWS_ISO_URL") || true
+fi
+if [[ -z "${WINDOWS_ISO_SIZE:-}" ]]; then
+    echo "WARNING: Unable to determine Windows ISO size from HTTP headers. Proceeding with existing download checks."
 fi
 
-VIRTIO_ISO_URL="$VIRTIO_ISO_URL"
-VIRTIO_ISO_SIZE=$(get_content_length "$VIRTIO_ISO_URL")
-if [[ -z "$VIRTIO_ISO_SIZE" ]]; then
-    echo "ERROR: Unable to determine VirtIO ISO size from HTTP headers."
-    exit 1
+if [[ -z "${VIRTIO_ISO_SIZE:-}" ]]; then
+    VIRTIO_ISO_SIZE=$(get_content_length "$VIRTIO_ISO_URL") || true
+fi
+if [[ -z "${VIRTIO_ISO_SIZE:-}" ]]; then
+    echo "WARNING: Unable to determine VirtIO ISO size from HTTP headers. Proceeding with existing download checks."
+fi
+
+if [[ "$FORCE_DOWNLOAD" -eq 1 ]]; then
+    rm -f "$WINDOWS_ISO_DEST" "$VIRTIO_ISO_DEST"
+    WINDOWS_ISO_SIZE=""
+    VIRTIO_ISO_SIZE=""
+    WINDOWS_ISO="$WINDOWS_ISO_DEST"
+    VIRTIO_ISO="$VIRTIO_ISO_DEST"
 fi
 
 TOTAL_ISO_SIZE_BYTES=$((WINDOWS_ISO_SIZE + VIRTIO_ISO_SIZE))
@@ -522,75 +590,87 @@ if mountpoint -q /mnt/zram0 2>/dev/null; then
 fi
 
 echo "Evaluating whether zram-backed download is possible..."
+DOWNLOAD_DIR=""
 AVAILABLE_RAM_MB=$(available_ram_mb)
 SAFE_RAM_MB=$(safe_ram_mb)
-if [[ "$SAFE_RAM_MB" -ge "$WINDOWS_ZRAM_MB" ]]; then
-    echo "Detected $AVAILABLE_RAM_MB MB available RAM; allowing zram usage for Windows ISO (${WINDOWS_ZRAM_MB}MB)."
-    if download_to_zram_and_copy "Windows" "$WINDOWS_ISO_URL" "$WINDOWS_ISO_DEST" "$WINDOWS_ZRAM_MB"; then
-        echo "Windows ISO downloaded via zram and copied to $WINDOWS_ISO_DEST."
+if [[ -f "$WINDOWS_ISO" && -s "$WINDOWS_ISO" ]]; then
+    echo "Skipping Windows ISO download because $WINDOWS_ISO already exists."
+else
+    if [[ "$SAFE_RAM_MB" -ge "$WINDOWS_ZRAM_MB" ]]; then
+        echo "Detected $AVAILABLE_RAM_MB MB available RAM; allowing zram usage for Windows ISO (${WINDOWS_ZRAM_MB}MB)."
+        if download_to_zram_and_copy "Windows" "$WINDOWS_ISO_URL" "$WINDOWS_ISO_DEST" "$WINDOWS_ZRAM_MB"; then
+            echo "Windows ISO downloaded via zram and copied to $WINDOWS_ISO_DEST."
+        else
+            echo "WARNING: Unable to download Windows ISO via zram; falling back to disk for Windows ISO."
+            cleanup_zram
+            DOWNLOAD_DIR=""
+        fi
     else
-        echo "WARNING: Unable to download Windows ISO via zram; falling back to disk for Windows ISO."
-        cleanup_zram
+        echo "Not enough safe RAM ($AVAILABLE_RAM_MB MB available, $SAFE_RAM_MB MB safe) to use zram for Windows ISO. Downloading Windows ISO to disk."
         DOWNLOAD_DIR=""
     fi
-else
-    echo "Not enough safe RAM ($AVAILABLE_RAM_MB MB available, $SAFE_RAM_MB MB safe) to use zram for Windows ISO. Downloading Windows ISO to disk."
-    DOWNLOAD_DIR=""
+
+    if [[ ! -f "$WINDOWS_ISO_DEST" ]]; then
+        echo "Using disk-based download for Windows ISO."
+        DOWNLOAD_DIR=$(choose_disk_download_dir "$WINDOWS_ISO_SIZE")
+        if [[ -z "$DOWNLOAD_DIR" ]]; then
+            echo "ERROR: No disk location has enough space for the Windows ISO."
+            exit 1
+        fi
+        mkdir -p "$DOWNLOAD_DIR"
+        WINDOWS_ISO="$DOWNLOAD_DIR/Windows.iso"
+        echo "Downloading Windows ISO to $WINDOWS_ISO..."
+        if ! retry_download "$WINDOWS_ISO_URL" "$WINDOWS_ISO"; then
+            echo "ERROR: Windows ISO download failed."
+            exit 1
+        fi
+        WINDOWS_ISO_DEST="$WINDOWS_ISO"
+    fi
 fi
 
-if [[ ! -f "$WINDOWS_ISO_DEST" ]]; then
-    echo "Using disk-based download for Windows ISO."
-    DOWNLOAD_DIR=$(choose_disk_download_dir "$WINDOWS_ISO_SIZE")
-    if [[ -z "$DOWNLOAD_DIR" ]]; then
-        echo "ERROR: No disk location has enough space for the Windows ISO."
-        exit 1
-    fi
-    mkdir -p "$DOWNLOAD_DIR"
-    WINDOWS_ISO="$DOWNLOAD_DIR/Windows.iso"
-    echo "Downloading Windows ISO to $WINDOWS_ISO..."
-    if ! retry_download "$WINDOWS_ISO_URL" "$WINDOWS_ISO"; then
-        echo "ERROR: Windows ISO download failed."
-        exit 1
-    fi
-    WINDOWS_ISO_DEST="$WINDOWS_ISO"
-fi
+WINDOWS_ISO="$WINDOWS_ISO_DEST"
 
 # Re-evaluate available RAM for VirtIO after Windows ISO is on disk.
 AVAILABLE_RAM_MB=$(available_ram_mb)
 SAFE_RAM_MB=$(safe_ram_mb)
-if [[ "$SAFE_RAM_MB" -ge "$VIRTIO_ZRAM_MB" ]]; then
-    echo "Detected $AVAILABLE_RAM_MB MB available RAM; allowing zram usage for VirtIO ISO (${VIRTIO_ZRAM_MB}MB)."
-    if download_to_zram_and_copy "VirtIO" "$VIRTIO_ISO_URL" "$VIRTIO_ISO_DEST" "$VIRTIO_ZRAM_MB"; then
-        echo "VirtIO ISO downloaded via zram and copied to $VIRTIO_ISO_DEST."
+if [[ -f "$VIRTIO_ISO" && -s "$VIRTIO_ISO" ]]; then
+    echo "Skipping VirtIO ISO download because $VIRTIO_ISO already exists."
+else
+    if [[ "$SAFE_RAM_MB" -ge "$VIRTIO_ZRAM_MB" ]]; then
+        echo "Detected $AVAILABLE_RAM_MB MB available RAM; allowing zram usage for VirtIO ISO (${VIRTIO_ZRAM_MB}MB)."
+        if download_to_zram_and_copy "VirtIO" "$VIRTIO_ISO_URL" "$VIRTIO_ISO_DEST" "$VIRTIO_ZRAM_MB"; then
+            echo "VirtIO ISO downloaded via zram and copied to $VIRTIO_ISO_DEST."
+        else
+            echo "WARNING: Unable to download VirtIO ISO via zram; falling back to disk for VirtIO ISO."
+            cleanup_zram
+            DOWNLOAD_DIR=""
+        fi
     else
-        echo "WARNING: Unable to download VirtIO ISO via zram; falling back to disk for VirtIO ISO."
-        cleanup_zram
+        echo "Not enough safe RAM ($AVAILABLE_RAM_MB MB available, $SAFE_RAM_MB MB safe) to use zram for VirtIO ISO. Downloading VirtIO ISO to disk."
         DOWNLOAD_DIR=""
     fi
-else
-    echo "Not enough safe RAM ($AVAILABLE_RAM_MB MB available, $SAFE_RAM_MB MB safe) to use zram for VirtIO ISO. Downloading VirtIO ISO to disk."
-    DOWNLOAD_DIR=""
-fi
 
-if [[ ! -f "$VIRTIO_ISO_DEST" ]]; then
-    echo "Using disk-based download for VirtIO ISO."
-    DOWNLOAD_DIR=$(choose_disk_download_dir "$VIRTIO_ISO_SIZE")
-    if [[ -z "$DOWNLOAD_DIR" ]]; then
-        echo "ERROR: No disk location has enough space for the VirtIO ISO."
-        exit 1
+    if [[ ! -f "$VIRTIO_ISO_DEST" ]]; then
+        echo "Using disk-based download for VirtIO ISO."
+        DOWNLOAD_DIR=$(choose_disk_download_dir "$VIRTIO_ISO_SIZE")
+        if [[ -z "$DOWNLOAD_DIR" ]]; then
+            echo "ERROR: No disk location has enough space for the VirtIO ISO."
+            exit 1
+        fi
+        mkdir -p "$DOWNLOAD_DIR"
+        VIRTIO_ISO="$DOWNLOAD_DIR/VirtIO.iso"
+        echo "Downloading VirtIO ISO to $VIRTIO_ISO..."
+        if ! retry_download "$VIRTIO_ISO_URL" "$VIRTIO_ISO"; then
+            echo "ERROR: VirtIO ISO download failed."
+            exit 1
+        fi
+        VIRTIO_ISO_DEST="$VIRTIO_ISO"
     fi
-    mkdir -p "$DOWNLOAD_DIR"
-    VIRTIO_ISO="$DOWNLOAD_DIR/VirtIO.iso"
-    echo "Downloading VirtIO ISO to $VIRTIO_ISO..."
-    if ! retry_download "$VIRTIO_ISO_URL" "$VIRTIO_ISO"; then
-        echo "ERROR: VirtIO ISO download failed."
-        exit 1
-    fi
-    VIRTIO_ISO_DEST="$VIRTIO_ISO"
 fi
 
 WINDOWS_ISO="$WINDOWS_ISO_DEST"
 VIRTIO_ISO="$VIRTIO_ISO_DEST"
+mark_downloads_checkpoint
 
 if [[ ! -f "$WINDOWS_ISO" || ! -f "$VIRTIO_ISO" ]]; then
     echo "ERROR: One or both ISO files are missing after download."
