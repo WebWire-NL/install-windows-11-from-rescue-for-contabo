@@ -808,8 +808,8 @@ prepare_windows_media() {
               "$STATE_DIR/install_image_inspected" "$STATE_DIR/boot_wim_patched"
     fi
 
-    windows_size=$(get_content_length "$WINDOWS_ISO_URL" || echo 0)
-    virtio_size=$(get_content_length "$VIRTIO_ISO_URL" || echo 0)
+    windows_size=$(get_content_length "$WINDOWS_ISO_URL" 2>/dev/null | tr -cd '0-9')
+    virtio_size=$(get_content_length "$VIRTIO_ISO_URL" 2>/dev/null | tr -cd '0-9')
 
     if [ -z "${windows_size:-}" ] || [ "${windows_size:-0}" -le 0 ]; then
         echo "WARNING: Windows ISO size unknown. Estimating ${default_windows_iso_size} bytes for zram decision."
