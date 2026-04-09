@@ -488,6 +488,20 @@ get_content_length() {
             echo "$size"
             return 0
         fi
+
+        size=$(curl -sSL -A "$ua" --max-redirs 10 -r 0-0 -D - -o /dev/null "$url" 2>/dev/null | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1)
+        if [[ -n "$size" ]]; then
+            echo "$size"
+            return 0
+        fi
+
+        if command -v wget >/dev/null 2>&1; then
+            size=$(wget --spider --server-response --max-redirect=20 --header="User-Agent: $ua" "$url" 2>&1 | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1)
+            if [[ -n "$size" ]]; then
+                echo "$size"
+                return 0
+            fi
+        fi
     done
 
     return 1

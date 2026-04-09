@@ -370,6 +370,7 @@ copy_windows_media() {
     trap 'mountpoint -q "'"$loop_dir"'" && umount "'"$loop_dir"'" || true; rmdir "'"$loop_dir"'" 2>/dev/null || true' RETURN
 
     mount -o loop "$iso" "$loop_dir"
+    echo "STAGE: copying Windows ISO contents from $loop_dir to $MNT_INSTALL..."
     rsync -a --info=progress2 --human-readable --stats "$loop_dir"/ "$MNT_INSTALL"/
 
     [ -f "$MNT_INSTALL/bootmgr" ] || fail "Windows media copy failed: bootmgr missing"
@@ -389,6 +390,7 @@ copy_virtio_media() {
 
     mkdir -p "$MNT_INSTALL/sources/virtio"
     mount -o loop "$iso" "$loop_dir"
+    echo "STAGE: copying VirtIO contents from $loop_dir to $MNT_INSTALL/sources/virtio..."
     rsync -a --info=progress2 --human-readable --stats "$loop_dir"/ "$MNT_INSTALL/sources/virtio"/
 
     find "$MNT_INSTALL/sources/virtio" -type f | head -n 1 >/dev/null || fail "VirtIO copy failed"
