@@ -420,10 +420,17 @@ if [[ "$SAFE_RAM_MB" -gt "$ZRAM_DISKSIZE_MB" ]]; then
             echo lz4 > /sys/block/zram0/comp_algorithm || true
             echo "${ZRAM_DISKSIZE_MB}M" > /sys/block/zram0/disksize
             if [[ $(cat /sys/block/zram0/disksize 2>/dev/null || echo 0) -gt 0 ]]; then
-                if mkfs.ext4 -q /dev/zram0 && mkdir -p /mnt/zram0 && mount /dev/zram0 /mnt/zram0; then
-                            echo "zram mounted at /mnt/zram0."
-                    DOWNLOAD_DIR="/mnt/zram0/windisk"
-                    mkdir -p "$DOWNLOAD_DIR"
+                if mkfs.ext4 -q -m 0 /dev/zram0 && mkdir -p /mnt/zram0 && mount /dev/zram0 /mnt/zram0; then
+                    ZRAM_AVAIL_KB=$(df --output=avail /mnt/zram0 2>/dev/null | tail -n 1 | tr -d ' ')
+                    ZRAM_AVAIL_MB=$((ZRAM_AVAIL_KB / 1024))
+                    if [[ "$ZRAM_AVAIL_MB" -ge "$TOTAL_ISO_SIZE_MB" ]]; then
+                        echo "zram mounted at /mnt/zram0."
+                        DOWNLOAD_DIR="/mnt/zram0/windisk"
+                        mkdir -p "$DOWNLOAD_DIR"
+                    else
+                        echo "WARNING: zram mount only has ${ZRAM_AVAIL_MB}MB usable space, less than ${TOTAL_ISO_SIZE_MB}MB required. Falling back to disk."
+                        cleanup_zram
+                    fi
                 else
                     echo "WARNING: zram format or mount failed. Falling back to disk."
                     cleanup_zram
