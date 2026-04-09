@@ -25,6 +25,7 @@ CHECK_ONLY=0
 FORCE_DOWNLOAD=0
 NO_PROMPT=0
 UNATTENDED=1
+USE_ZRAM=0
 
 WINDOWS_ISO_URL=""
 VIRTIO_ISO_URL=""
@@ -35,6 +36,9 @@ WINDOWS_LOCALE="$DEFAULT_WINDOWS_LOCALE"
 WINDOWS_TIMEZONE="$DEFAULT_WINDOWS_TIMEZONE"
 WINDOWS_USERNAME="$DEFAULT_WINDOWS_USERNAME"
 WINDOWS_PASSWORD="$DEFAULT_WINDOWS_PASSWORD"
+
+WINDOWS_ISO=""
+VIRTIO_ISO=""
 
 checkpoint_done() { [ -f "$STATE_DIR/$1" ]; }
 checkpoint_set() { touch "$STATE_DIR/$1"; }
@@ -86,16 +90,18 @@ package_for_command() {
         grep) echo grep ;;
         sed) echo sed ;;
         find) echo findutils ;;
-        mount|mountpoint|blockdev|partx|fdisk|lsblk|wipefs) echo util-linux ;;
+        mount|mountpoint|blockdev|partx|fdisk|lsblk|wipefs|swapon|swapoff) echo util-linux ;;
         partprobe|parted) echo parted ;;
         wimlib-imagex) echo wimtools ;;
-        sort|mkdir|rm|touch|cat|mktemp|stat|df|head|tail|tr|cut) echo coreutils ;;
+        sort|mkdir|rm|touch|cat|mktemp|stat|df|head|tail|tr|cut|sha256sum|dd) echo coreutils ;;
         lsof) echo lsof ;;
         wget) echo wget ;;
         aria2c) echo aria2 ;;
         iconv) echo libc-bin ;;
         xmllint) echo libxml2-utils ;;
-        sha256sum) echo coreutils ;;
+        modprobe) echo kmod ;;
+        mkfs.ext4) echo e2fsprogs ;;
+        free) echo procps ;;
         *) echo "" ;;
     esac
 }
@@ -128,7 +134,7 @@ ensure_toolchain() {
     local required=(
         parted partprobe mkfs.ntfs mount umount rsync lsof sort mountpoint pgrep fuser mkdir rm touch cat mktemp
         grub-install grub-probe grep awk sed find wimlib-imagex iconv lsblk stat df head tail tr cut wipefs
-        sha256sum xmllint
+        sha256sum xmllint modprobe mkfs.ext4 free swapon swapoff dd
     )
     local missing=()
     local cmd
@@ -255,8 +261,7 @@ detect_firmware_mode() {
 }
 
 get_disk_label() {
-    parted "$TARGET_DISK" --script print 2>/dev/null \
-        | awk -F: '/^Partition Table/ {gsub(/[[:space:]]/, "", $2); print $2}'
+    parted "$TARGET_DISK" --script print 2>/dev/null | awk -F: '/^Partition Table/ {gsub(/[[:space:]]/, "", $2); print $2}'
 }
 
 verify_vps_compatibility() {
@@ -267,14 +272,13 @@ verify_vps_compatibility() {
     [ "$FIRMWARE_MODE" = "bios" ] || echo "WARNING: Script is optimized for BIOS rescue boot."
 }
 
-verify_free_space() {
-    local path="$1"
-    local min_bytes="$2"
-    local avail
-    avail=$(df --output=avail "$path" 2>/dev/null | tail -n 1 | tr -d ' ')
-    [ -n "$avail" ] || fail "Unable to determine free space for $path"
-    local avail_bytes=$((avail * 1024))
-    [ "$avail_bytes" -ge "$min_bytes" ] || fail "Insufficient space on $path: have $avail_bytes bytes, need $min_bytes bytes"
+delete_all_partitions() {
+    echo "Deleting existing partitions on $TARGET_DISK ..."
+    parted "$TARGET_DISK" --script -- rm 1 || true
+    parted "$TARGET_DISK" --script -- rm 2 || true
+    parted "$TARGET_DISK" --script -- rm 3 || true
+    parted "$TARGET_DISK" --script -- rm 4 || true
+    wipefs -a "$TARGET_DISK" || true
 }
 
 recreate_partitions() {
@@ -289,7 +293,8 @@ recreate_partitions() {
     parted "$TARGET_DISK" --script -- mklabel msdos
     parted "$TARGET_DISK" --script -- mkpart primary ntfs 1MiB 50%
     parted "$TARGET_DISK" --script -- mkpart primary ntfs 50% 100%
-    parted "$TARGET_DISK" --script -- set 1 boot on
+    parted "$TARGET_DISK" --script -- set 1 boot off
+    parted "$TARGET_DISK" --script -- set 2 boot on
     refresh_partition_table
 
     [ -b "$PART1" ] || fail "$PART1 was not created"
@@ -329,35 +334,63 @@ verify_partition_layout() {
 
 get_content_length() {
     local url="$1"
-    local size
+    local size=""
     local ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
     if command_exists curl; then
-        size=$(curl -fsSLI -A "$ua" --compressed --max-redirs 10 "$url" 2>/dev/null | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '
-' | tail -n1)
-        if [ -n "$size" ]; then
-            echo "$size"
-            return 0
-        fi
+        size=$(curl -fsSLI -A "$ua" --compressed --max-redirs 10 "$url" 2>/dev/null | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1 || true)
+        [ -n "$size" ] && { echo "$size"; return 0; }
 
-        size=$(curl -fsSL -A "$ua" --compressed --max-redirs 10 -r 0-0 -D - -o /dev/null "$url" 2>/dev/null | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '
-' | tail -n1)
-        if [ -n "$size" ]; then
-            echo "$size"
-            return 0
-        fi
+        size=$(curl -fsSL -A "$ua" --compressed --max-redirs 10 -r 0-0 -D - -o /dev/null "$url" 2>/dev/null | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1 || true)
+        [ -n "$size" ] && { echo "$size"; return 0; }
     fi
 
     if command_exists wget; then
-        size=$(wget --spider --server-response --max-redirect=20 --header="User-Agent: $ua" "$url" 2>&1 | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '
-' | tail -n1)
-        if [ -n "$size" ]; then
-            echo "$size"
-            return 0
-        fi
+        size=$(wget --spider --server-response --max-redirect=20 --header="User-Agent: $ua" "$url" 2>&1 | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1 || true)
+        [ -n "$size" ] && { echo "$size"; return 0; }
     fi
 
     echo ""
+}
+
+setup_zram() {
+    local size_mb="$1"
+    local dev="/dev/zram0"
+
+    modprobe zram || return 1
+    [ -e /sys/block/zram0/disksize ] || return 1
+
+    swapoff "$dev" 2>/dev/null || true
+    echo 1 > /sys/block/zram0/reset || true
+    echo lz4 > /sys/block/zram0/comp_algorithm || true
+    echo "${size_mb}M" > /sys/block/zram0/disksize
+
+    mkfs.ext4 -F "$dev" >/dev/null 2>&1 || return 1
+    mkdir -p /mnt/zram0
+    mount "$dev" /mnt/zram0 || return 1
+    return 0
+}
+
+cleanup_zram() {
+    cleanup_mount /mnt/zram0
+    if [ -e /sys/block/zram0/reset ]; then
+        echo 1 > /sys/block/zram0/reset || true
+    fi
+}
+
+finalize_zram_downloads() {
+    [ -d /mnt/zram0/windisk ] || return 1
+    mkdir -p "$MNT_STORAGE"
+    mountpoint -q "$MNT_STORAGE" || return 1
+
+    rsync -a --info=progress2 /mnt/zram0/windisk/ "$MNT_STORAGE/" || return 1
+
+    WINDOWS_ISO="$MNT_STORAGE/Windows.iso"
+    VIRTIO_ISO="$MNT_STORAGE/VirtIO.iso"
+
+    [ -f "$WINDOWS_ISO" ] || return 1
+    [ -f "$VIRTIO_ISO" ] || return 1
+    return 0
 }
 
 choose_download_dir() {
@@ -740,13 +773,22 @@ set timeout=5
 set default=0
 
 menuentry "windows installer (BIOS)" {
+    insmod part_msdos
     insmod ntfs
-    search --no-floppy --set=root --file /bootmgr
-    chainloader /bootmgr
+    set root=(hd0,msdos2)
+    chainloader +1
+    boot
+}
+
+menuentry "Windows 11 (installed)" {
+    insmod part_msdos
+    insmod ntfs
+    set root=(hd0,msdos1)
+    chainloader +1
     boot
 }
 EOF
-    grep -q 'chainloader /bootmgr' "$MNT_INSTALL/boot/grub/grub.cfg" || fail "grub.cfg missing chainloader stanza"
+    grep -q 'chainloader +1' "$MNT_INSTALL/boot/grub/grub.cfg" || fail "grub.cfg missing chainloader +1 stanza"
     checkpoint_set grub_cfg
 }
 
@@ -782,6 +824,8 @@ verify_ready() {
     echo "Installer partition: $PART2"
     echo "Edition: $WINDOWS_EDITION"
     echo "Reboot the VPS and select: windows installer (BIOS)"
+    echo "After setup completes, reboot again and select: Windows 11 (installed)"
+    echo "If you want Windows to fully own the MBR afterward, run bootrec /fixmbr and bootrec /fixboot from Windows recovery."
 }
 
 prepare_windows_media() {
