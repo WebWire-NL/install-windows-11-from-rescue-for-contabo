@@ -741,7 +741,7 @@ set default=0
 
 menuentry "windows installer (BIOS)" {
     insmod ntfs
-    search --no-floppy --set=root --file=/bootmgr
+    search --no-floppy --set=root --file /bootmgr
     chainloader /bootmgr
     boot
 }
