@@ -25,12 +25,28 @@ while [[ "$#" -gt 0 ]]; do
             shift
             ;;
         --iso-url|--windows-iso-url)
+            if [ "$#" -lt 2 ]; then
+                echo "ERROR: --iso-url requires a value."
+                exit 1
+            fi
             ISO_URL="$2"
             shift 2
             ;;
+        --iso-url=*|--windows-iso-url=*)
+            ISO_URL="${1#*=}"
+            shift
+            ;;
         --virtio-url|--virtio-iso-url)
+            if [ "$#" -lt 2 ]; then
+                echo "ERROR: --virtio-url requires a value."
+                exit 1
+            fi
             VIRTIO_ISO_URL="$2"
             shift 2
+            ;;
+        --virtio-url=*|--virtio-iso-url=*)
+            VIRTIO_ISO_URL="${1#*=}"
+            shift
             ;;
         --windows-iso-md5|--iso-md5)
             WINDOWS_ISO_MD5="$2"
@@ -299,6 +315,7 @@ ARIA2_OPTS=(
 
 USER_AGENTS=(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0"
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15"
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
@@ -337,7 +354,6 @@ retry_download() {
             wget --user-agent="$ua" -O "$output" "$url" && return 0
             rc=$?
         done
-        return $rc
     fi
 
     if command -v curl >/dev/null 2>&1; then
