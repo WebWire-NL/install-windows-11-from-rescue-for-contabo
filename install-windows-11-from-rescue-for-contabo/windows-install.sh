@@ -540,6 +540,26 @@ if ! retry_download "$WINDOWS_ISO_URL" "$WINDOWS_ISO"; then
     exit 1
 fi
 
+if [[ "$DOWNLOAD_DIR" == "/mnt/zram0/windisk" ]]; then
+    ZRAM_REMAIN_KB=$(df --output=avail /mnt/zram0 2>/dev/null | tail -n 1 | tr -d ' ')
+    ZRAM_REMAIN_MB=$((ZRAM_REMAIN_KB / 1024))
+    VIRTIO_ISO_MB=$(((VIRTIO_ISO_SIZE + 1024*1024 - 1) / 1024 / 1024))
+    SAFE_MARGIN_MB=128
+    if [[ "$ZRAM_REMAIN_MB" -lt $((VIRTIO_ISO_MB + SAFE_MARGIN_MB)) ]]; then
+        echo "WARNING: zram only has ${ZRAM_REMAIN_MB}MB free, which is insufficient for the ${VIRTIO_ISO_MB}MB VirtIO ISO plus margin. Falling back to disk."
+        mkdir -p /root/windisk
+        if [[ -f "$WINDOWS_ISO" ]]; then
+            echo "Copying downloaded Windows ISO from zram to /root/windisk/Windows.iso"
+            cp -av "$WINDOWS_ISO" /root/windisk/Windows.iso
+            WINDOWS_ISO="/root/windisk/Windows.iso"
+        fi
+        cleanup_zram
+        DOWNLOAD_DIR="/root/windisk"
+        mkdir -p "$DOWNLOAD_DIR"
+        VIRTIO_ISO="$DOWNLOAD_DIR/VirtIO.iso"
+    fi
+fi
+
 echo "Downloading VirtIO ISO to $VIRTIO_ISO..."
 if ! retry_download "$VIRTIO_ISO_URL" "$VIRTIO_ISO"; then
     if [[ "$DOWNLOAD_DIR" == "/mnt/zram0/windisk" ]]; then
