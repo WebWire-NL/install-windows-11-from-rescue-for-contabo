@@ -84,7 +84,7 @@ cleanup_mount() {
                 echo "WARNING: $p is still mounted after lazy unmount; killing processes holding it"
                 if command_exists lsof; then
                     local pids
-                    pids=$(lsof +D "$p" 2>/dev/null | awk 'NR>1 {print $2}' | sort -u)
+                    pids=$(lsof +D "$p" 2>/dev/null | awk 'NR>1 {print $2}' | sort -u) || true
                     if [ -n "$pids" ]; then
                         echo "Killing processes holding $p: $pids"
                         kill -TERM $pids 2>/dev/null || true
@@ -103,7 +103,7 @@ kill_block_device_holders() {
     local dev="$1"
     if [ -b "$dev" ] && command_exists lsof; then
         local pids
-        pids=$(lsof "$dev" 2>/dev/null | awk 'NR>1 {print $2}' | sort -u)
+        pids=$(lsof "$dev" 2>/dev/null | awk 'NR>1 {print $2}' | sort -u) || true
         if [ -n "$pids" ]; then
             echo "Killing processes holding $dev: $pids"
             kill -TERM $pids 2>/dev/null || true
