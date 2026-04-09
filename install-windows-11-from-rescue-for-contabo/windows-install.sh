@@ -225,6 +225,12 @@ choose_disk_download_dir() {
         return
     fi
 
+    if ! mountpoint -q /mnt 2>/dev/null && [[ -b /dev/sda2 ]]; then
+        echo "Attempting to mount /dev/sda2 at /mnt for disk fallback..."
+        mkdir -p /mnt
+        mount /dev/sda2 /mnt 2>/dev/null || true
+    fi
+
     if mountpoint -q /mnt 2>/dev/null; then
         mnt_avail=$(df --output=avail /mnt 2>/dev/null | tail -n 1)
         if [[ $((mnt_avail * 1024)) -ge "$required_bytes" ]]; then
