@@ -82,9 +82,32 @@ cleanup_mount() {
             sleep 2
             if mountpoint -q "$p"; then
                 echo "WARNING: $p is still mounted after lazy unmount; killing processes holding it"
-                fuser -km "$p" 2>/dev/null || true
+                if command_exists lsof; then
+                    local pids
+                    pids=$(lsof +D "$p" 2>/dev/null | awk 'NR>1 {print $2}' | sort -u)
+                    if [ -n "$pids" ]; then
+                        echo "Killing processes holding $p: $pids"
+                        kill -TERM $pids 2>/dev/null || true
+                        sleep 1
+                    fi
+                else
+                    fuser -km "$p" 2>/dev/null || true
+                fi
                 umount -l "$p" || true
             fi
+        fi
+    fi
+}
+
+kill_block_device_holders() {
+    local dev="$1"
+    if [ -b "$dev" ] && command_exists lsof; then
+        local pids
+        pids=$(lsof "$dev" 2>/dev/null | awk 'NR>1 {print $2}' | sort -u)
+        if [ -n "$pids" ]; then
+            echo "Killing processes holding $dev: $pids"
+            kill -TERM $pids 2>/dev/null || true
+            sleep 1
         fi
     fi
 }
@@ -144,7 +167,7 @@ parse_args() {
 
 ensure_toolchain() {
     local required=(
-        parted partprobe mkfs.ntfs mount umount rsync
+        parted partprobe mkfs.ntfs mount umount rsync lsof
         grub-install grub-probe curl grep awk sed find wimlib-imagex iconv
     )
     local missing=()
@@ -188,6 +211,7 @@ recreate_partitions() {
     echo "Recreating partitions on $TARGET_DISK ..."
     cleanup_mount "$MNT_INSTALL"
     cleanup_mount "$MNT_STORAGE"
+    kill_block_device_holders "$TARGET_DISK"
 
     parted "$TARGET_DISK" --script -- mklabel msdos
     parted "$TARGET_DISK" --script -- mkpart primary ntfs 1MiB 50%
