@@ -4,155 +4,157 @@ set -euo pipefail
 STATE_DIR="/root/.wininstall-state"
 mkdir -p "$STATE_DIR"
 
-TARGET_DISK="${TARGET_DISK:-/dev/sda}"
-PART1="${PART1:-${TARGET_DISK}1}"
-PART2="${PART2:-${TARGET_DISK}2}"
+TARGET_DISK="/dev/sda"
+PART1="${TARGET_DISK}1"
+PART2="${TARGET_DISK}2"
 
 MNT_INSTALL="/mnt"
 MNT_STORAGE="/root/windisk"
 
 GRUB_INSTALL_TARGET="i386-pc"
-DEFAULT_VIRTIO_ISO_URL="https://bit.ly/4d1g7Ht"
+DEFAULT_VIRTIO_ISO_URL="https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
+DEFAULT_WINDOWS_EDITION="Windows 11 Pro"
+DEFAULT_WINDOWS_GENERIC_KEY="VK7JG-NPHTM-C97JM-9MPGT-3V66T"
+DEFAULT_WINDOWS_LOCALE="en-US"
+DEFAULT_WINDOWS_TIMEZONE="UTC"
+DEFAULT_WINDOWS_USERNAME="Administrator"
+DEFAULT_WINDOWS_PASSWORD="ChangeMeNow!123"
 
 RECREATE_DISK=0
 CHECK_ONLY=0
 FORCE_DOWNLOAD=0
 NO_PROMPT=0
 UNATTENDED=1
+
 WINDOWS_ISO_URL=""
 VIRTIO_ISO_URL=""
-UNATTENDED_CMD="${UNATTENDED_CMD:-}"
-
-WINDOWS_EDITION="${WINDOWS_EDITION:-Windows 11 Pro}"
-WINDOWS_GENERIC_KEY="${WINDOWS_GENERIC_KEY:-VK7JG-NPHTM-C97JM-9MPGT-3V66T}"
-WINDOWS_LOCALE="${WINDOWS_LOCALE:-en-US}"
-WINDOWS_TIMEZONE="${WINDOWS_TIMEZONE:-UTC}"
-WINDOWS_USERNAME="${WINDOWS_USERNAME:-Administrator}"
-WINDOWS_PASSWORD="${WINDOWS_PASSWORD:-ChangeMeNow!123}"
+UNATTENDED_CMD=""
+WINDOWS_EDITION="$DEFAULT_WINDOWS_EDITION"
+WINDOWS_GENERIC_KEY="$DEFAULT_WINDOWS_GENERIC_KEY"
+WINDOWS_LOCALE="$DEFAULT_WINDOWS_LOCALE"
+WINDOWS_TIMEZONE="$DEFAULT_WINDOWS_TIMEZONE"
+WINDOWS_USERNAME="$DEFAULT_WINDOWS_USERNAME"
+WINDOWS_PASSWORD="$DEFAULT_WINDOWS_PASSWORD"
 
 checkpoint_done() { [ -f "$STATE_DIR/$1" ]; }
 checkpoint_set() { touch "$STATE_DIR/$1"; }
+command_exists() { command -v "$1" >/dev/null 2>&1; }
+
 dump_checkpoint_state() {
     echo "=== checkpoint state ==="
-    for cp in partitions downloads_completed windows_extracted virtio_extracted boot_wim_patched bypass_ready grub_cfg grub_installed; do
+    for cp in \
+        partitions \
+        downloads_completed \
+        windows_extracted \
+        virtio_extracted \
+        install_image_inspected \
+        autounattend_written \
+        ei_cfg_written \
+        bypass_ready \
+        boot_wim_patched \
+        grub_cfg \
+        grub_installed \
+        final_verified
+    do
         if checkpoint_done "$cp"; then
             echo "$cp: set"
         else
             echo "$cp: missing"
         fi
     done
-    echo "=== installer file state ==="
-    for file in "$MNT_INSTALL/bootmgr" "$MNT_INSTALL/sources/boot.wim" "$MNT_INSTALL/sources/virtio/NetKVM/2k3/amd64/netkvm.sys"; do
-        if [ -e "$file" ]; then
-            echo "$file: present"
-        else
-            echo "$file: missing"
-        fi
-    done
 }
-command_exists() { command -v "$1" >/dev/null 2>&1; }
 
-refresh_partition_table() {
-    echo "Refreshing kernel partition table for $TARGET_DISK..."
-    if command_exists partprobe; then
-        partprobe "$TARGET_DISK" || true
-    fi
-    if command_exists blockdev; then
-        blockdev --rereadpt "$TARGET_DISK" || true
-    fi
-    if command_exists partx; then
-        partx -u "$TARGET_DISK" || true
-    fi
-    if command_exists udevadm; then
-        udevadm settle --timeout=10 || true
-    fi
-    sleep 3
+fail() {
+    echo "ERROR: $*"
+    dump_checkpoint_state || true
+    exit 1
 }
 
 require_root() {
-    [ "$(id -u)" -eq 0 ] || { echo "ERROR: Run as root."; exit 1; }
+    [ "$(id -u)" -eq 0 ] || fail "Run as root."
 }
 
-cleanup_mount() {
-    local p="$1"
-    if mountpoint -q "$p"; then
-        if ! umount "$p"; then
-            echo "WARNING: $p is busy, trying lazy unmount"
-            umount -l "$p" || true
-            sleep 2
-            if mountpoint -q "$p"; then
-                echo "WARNING: $p is still mounted after lazy unmount; killing processes holding it"
-                if command_exists lsof; then
-                    local pids
-                    pids=$(lsof +D "$p" 2>/dev/null | awk 'NR>1 {print $2}' | sort -u) || true
-                    if [ -n "$pids" ]; then
-                        echo "Killing processes holding $p: $pids"
-                        kill -TERM $pids 2>/dev/null || true
-                        sleep 1
-                    fi
-                else
-                    fuser -km "$p" 2>/dev/null || true
-                fi
-                umount -f "$p" || true
-                umount -l "$p" || true
-            fi
-            if mountpoint -q "$p"; then
-                echo "WARNING: $p still appears mounted after force unmount; killing helper processes"
-                if command_exists pgrep; then
-                    local helper_pids
-                    helper_pids=$(pgrep -f "mount.ntfs .* $p" 2>/dev/null || true)
-                    if [ -n "$helper_pids" ]; then
-                        echo "Killing helper processes: $helper_pids"
-                        kill -TERM $helper_pids 2>/dev/null || true
-                        sleep 1
-                    fi
-                fi
-                umount -f "$p" || true
-                umount -l "$p" || true
-            fi
+package_for_command() {
+    case "$1" in
+        mkfs.ntfs) echo ntfs-3g ;;
+        grub-install|grub-probe) echo grub-pc ;;
+        curl) echo curl ;;
+        rsync) echo rsync ;;
+        pgrep) echo procps ;;
+        fuser) echo psmisc ;;
+        awk) echo gawk ;;
+        grep) echo grep ;;
+        sed) echo sed ;;
+        find) echo findutils ;;
+        mount|mountpoint|blockdev|partx|fdisk|lsblk|wipefs) echo util-linux ;;
+        partprobe|parted) echo parted ;;
+        wimlib-imagex) echo wimtools ;;
+        sort|mkdir|rm|touch|cat|mktemp|stat|df|head|tail|tr|cut) echo coreutils ;;
+        lsof) echo lsof ;;
+        wget) echo wget ;;
+        aria2c) echo aria2 ;;
+        iconv) echo libc-bin ;;
+        xmllint) echo libxml2-utils ;;
+        sha256sum) echo coreutils ;;
+        *) echo "" ;;
+    esac
+}
+
+install_missing_dependencies() {
+    if ! command_exists apt-get; then
+        return 1
+    fi
+
+    declare -A seen_pkgs=()
+    local missing_pkgs=()
+    local cmd pkg
+
+    for cmd in "$@"; do
+        pkg=$(package_for_command "$cmd")
+        if [ -n "$pkg" ] && [ -z "${seen_pkgs[$pkg]:-}" ]; then
+            seen_pkgs[$pkg]=1
+            missing_pkgs+=("$pkg")
         fi
-    fi
+    done
+
+    [ "${#missing_pkgs[@]}" -eq 0 ] && return 0
+
+    echo "Installing missing dependency packages: ${missing_pkgs[*]}"
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing_pkgs[@]}"
 }
 
-kill_block_device_holders() {
-    local dev="$1"
-    if [ -b "$dev" ] && command_exists lsof; then
-        local pids=()
-        local target
-        for target in "$dev" "${dev}1" "${dev}2"; do
-            if [ -b "$target" ]; then
-                pids+=( $(lsof "$target" 2>/dev/null | awk 'NR>1 {print $2}' || true) )
-            fi
-        done
-        pids=( $(printf '%s\n' "${pids[@]}" | sort -u) )
-        if [ "${#pids[@]}" -gt 0 ]; then
-            echo "Killing processes holding $dev partitions: ${pids[*]}"
-            kill -TERM "${pids[@]}" 2>/dev/null || true
-            sleep 1
-        fi
-    fi
-}
+ensure_toolchain() {
+    local required=(
+        parted partprobe mkfs.ntfs mount umount rsync lsof sort mountpoint pgrep fuser mkdir rm touch cat mktemp
+        grub-install grub-probe grep awk sed find wimlib-imagex iconv lsblk stat df head tail tr cut wipefs
+        sha256sum xmllint
+    )
+    local missing=()
+    local cmd
 
-ensure_mount_dir() {
-    local p="$1"
-    if ! mkdir -p "$p" 2>/dev/null; then
-        echo "WARNING: unable to create mount directory $p; attempting stale mount cleanup"
-        cleanup_mount "$p"
-        umount -l "$p" 2>/dev/null || true
-        rm -rf "$p" 2>/dev/null || true
-        mkdir -p "$p"
-    fi
-}
+    for cmd in "${required[@]}"; do
+        command_exists "$cmd" || missing+=("$cmd")
+    done
 
-mount_existing_partitions() {
-    ensure_mount_dir "$MNT_INSTALL"
-    ensure_mount_dir "$MNT_STORAGE"
-    if [ -b "$PART2" ] && ! mountpoint -q "$MNT_INSTALL"; then
-        mount "$PART2" "$MNT_INSTALL" 2>/dev/null || true
+    if ! command_exists aria2c && ! command_exists curl && ! command_exists wget; then
+        missing+=(aria2c curl wget)
     fi
-    if [ -b "$PART1" ] && ! mountpoint -q "$MNT_STORAGE"; then
-        mount "$PART1" "$MNT_STORAGE" 2>/dev/null || true
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "Missing required commands: ${missing[*]}"
+        install_missing_dependencies "${missing[@]}" || true
     fi
+
+    missing=()
+    for cmd in "${required[@]}"; do
+        command_exists "$cmd" || missing+=("$cmd")
+    done
+    if ! command_exists aria2c && ! command_exists curl && ! command_exists wget; then
+        missing+=(aria2c curl wget)
+    fi
+
+    [ "${#missing[@]}" -eq 0 ] || fail "Missing required commands after install attempt: ${missing[*]}"
 }
 
 parse_args() {
@@ -163,7 +165,6 @@ parse_args() {
             --force-download) FORCE_DOWNLOAD=1 ;;
             --no-prompt) NO_PROMPT=1 ;;
             --unattended) UNATTENDED=1 ;;
-            --unattended-cmd=*) UNATTENDED_CMD="${1#*=}" ;;
             --windows-iso-url=*) WINDOWS_ISO_URL="${1#*=}" ;;
             --virtio-iso-url=*) VIRTIO_ISO_URL="${1#*=}" ;;
             --windows-edition=*) WINDOWS_EDITION="${1#*=}" ;;
@@ -172,101 +173,20 @@ parse_args() {
             --windows-timezone=*) WINDOWS_TIMEZONE="${1#*=}" ;;
             --windows-username=*) WINDOWS_USERNAME="${1#*=}" ;;
             --windows-password=*) WINDOWS_PASSWORD="${1#*=}" ;;
-            --unattended-cmd)
-                shift; UNATTENDED_CMD="${1:-}" ;;
-            --windows-iso-url)
-                shift; WINDOWS_ISO_URL="${1:-}" ;;
-            --virtio-iso-url)
-                shift; VIRTIO_ISO_URL="${1:-}" ;;
-            --windows-edition)
-                shift; WINDOWS_EDITION="${1:-}" ;;
-            --windows-generic-key)
-                shift; WINDOWS_GENERIC_KEY="${1:-}" ;;
-            --windows-locale)
-                shift; WINDOWS_LOCALE="${1:-}" ;;
-            --windows-timezone)
-                shift; WINDOWS_TIMEZONE="${1:-}" ;;
-            --windows-username)
-                shift; WINDOWS_USERNAME="${1:-}" ;;
-            --windows-password)
-                shift; WINDOWS_PASSWORD="${1:-}" ;;
-            *)
-                echo "ERROR: Unknown argument: $1"
-                exit 1 ;;
+            --unattended-cmd=*) UNATTENDED_CMD="${1#*=}" ;;
+            --windows-iso-url) shift; WINDOWS_ISO_URL="${1:-}" ;;
+            --virtio-iso-url) shift; VIRTIO_ISO_URL="${1:-}" ;;
+            --windows-edition) shift; WINDOWS_EDITION="${1:-}" ;;
+            --windows-generic-key) shift; WINDOWS_GENERIC_KEY="${1:-}" ;;
+            --windows-locale) shift; WINDOWS_LOCALE="${1:-}" ;;
+            --windows-timezone) shift; WINDOWS_TIMEZONE="${1:-}" ;;
+            --windows-username) shift; WINDOWS_USERNAME="${1:-}" ;;
+            --windows-password) shift; WINDOWS_PASSWORD="${1:-}" ;;
+            --unattended-cmd) shift; UNATTENDED_CMD="${1:-}" ;;
+            *) fail "Unknown argument: $1" ;;
         esac
         shift
     done
-}
-
-ensure_toolchain() {
-    local required=(
-        parted partprobe mkfs.ntfs mount umount rsync lsof
-        grub-install grub-probe curl grep awk sed find wimlib-imagex iconv
-    )
-    local missing=()
-    for cmd in "${required[@]}"; do
-        command_exists "$cmd" || missing+=("$cmd")
-    done
-    if [ "${#missing[@]}" -gt 0 ]; then
-        echo "ERROR: Missing required commands: ${missing[*]}"
-        exit 1
-    fi
-}
-
-detect_firmware_mode() {
-    if [ -d /sys/firmware/efi ]; then
-        FIRMWARE_MODE="uefi"
-    else
-        FIRMWARE_MODE="bios"
-    fi
-}
-
-get_disk_label() {
-    parted "$TARGET_DISK" --script print 2>/dev/null \
-        | awk -F: '/^Partition Table/ {gsub(/[[:space:]]/, "", $2); print $2}'
-}
-
-verify_vps_compatibility() {
-    [ -b "$TARGET_DISK" ] || { echo "ERROR: $TARGET_DISK not found."; exit 1; }
-    detect_firmware_mode
-    echo "Detected firmware mode: $FIRMWARE_MODE"
-
-    local label
-    label="$(get_disk_label || true)"
-    echo "Detected disk label: ${label:-unknown}"
-
-    if [ "$FIRMWARE_MODE" != "bios" ]; then
-        echo "WARNING: This script is optimized for BIOS rescue boot."
-    fi
-}
-
-recreate_partitions() {
-    echo "Recreating partitions on $TARGET_DISK ..."
-    cleanup_mount "$MNT_INSTALL"
-    cleanup_mount "$MNT_STORAGE"
-    kill_block_device_holders "$TARGET_DISK"
-    refresh_partition_table
-
-    parted "$TARGET_DISK" --script -- mklabel msdos
-    parted "$TARGET_DISK" --script -- mkpart primary ntfs 1MiB 50%
-    parted "$TARGET_DISK" --script -- mkpart primary ntfs 50% 100%
-    refresh_partition_table
-
-    mkfs.ntfs -f "$PART1"
-    mkfs.ntfs -f "$PART2"
-
-    mkdir -p "$MNT_INSTALL" "$MNT_STORAGE"
-    mount "$PART2" "$MNT_INSTALL"
-    mount "$PART1" "$MNT_STORAGE"
-
-    checkpoint_set partitions
-}
-
-ensure_partitions_ready() {
-    mount_existing_partitions
-    if [ "$RECREATE_DISK" -eq 1 ] || ! mountpoint -q "$MNT_INSTALL" || ! mountpoint -q "$MNT_STORAGE"; then
-        recreate_partitions
-    fi
 }
 
 prompt_value() {
@@ -285,6 +205,136 @@ prompt_value() {
     echo "$v"
 }
 
+refresh_partition_table() {
+    echo "Refreshing kernel partition table for $TARGET_DISK..."
+    partprobe "$TARGET_DISK" || true
+    blockdev --rereadpt "$TARGET_DISK" || true
+    partx -u "$TARGET_DISK" || true
+    command_exists udevadm && udevadm settle --timeout=10 || true
+    sleep 3
+}
+
+cleanup_mount() {
+    local p="$1"
+    if mountpoint -q "$p"; then
+        umount "$p" 2>/dev/null || umount -l "$p" 2>/dev/null || true
+    fi
+}
+
+ensure_mount_dir() {
+    local p="$1"
+    mkdir -p "$p" 2>/dev/null || true
+}
+
+kill_block_device_holders() {
+    local dev="$1"
+    local pids=""
+    if command_exists lsof; then
+        pids="$(lsof "$dev" "${dev}1" "${dev}2" 2>/dev/null | awk 'NR>1 {print $2}' | sort -u | tr '\n' ' ' || true)"
+        if [ -n "$pids" ]; then
+            echo "Killing processes holding $dev: $pids"
+            kill -TERM $pids 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+}
+
+mount_existing_partitions() {
+    ensure_mount_dir "$MNT_INSTALL"
+    ensure_mount_dir "$MNT_STORAGE"
+    [ -b "$PART2" ] && ! mountpoint -q "$MNT_INSTALL" && mount "$PART2" "$MNT_INSTALL" 2>/dev/null || true
+    [ -b "$PART1" ] && ! mountpoint -q "$MNT_STORAGE" && mount "$PART1" "$MNT_STORAGE" 2>/dev/null || true
+}
+
+detect_firmware_mode() {
+    if [ -d /sys/firmware/efi ]; then
+        FIRMWARE_MODE="uefi"
+    else
+        FIRMWARE_MODE="bios"
+    fi
+}
+
+get_disk_label() {
+    parted "$TARGET_DISK" --script print 2>/dev/null \
+        | awk -F: '/^Partition Table/ {gsub(/[[:space:]]/, "", $2); print $2}'
+}
+
+verify_vps_compatibility() {
+    [ -b "$TARGET_DISK" ] || fail "$TARGET_DISK not found."
+    detect_firmware_mode
+    echo "Detected firmware mode: $FIRMWARE_MODE"
+    echo "Detected disk label: $(get_disk_label || echo unknown)"
+    [ "$FIRMWARE_MODE" = "bios" ] || echo "WARNING: Script is optimized for BIOS rescue boot."
+}
+
+verify_free_space() {
+    local path="$1"
+    local min_bytes="$2"
+    local avail
+    avail=$(df --output=avail "$path" 2>/dev/null | tail -n 1 | tr -d ' ')
+    [ -n "$avail" ] || fail "Unable to determine free space for $path"
+    local avail_bytes=$((avail * 1024))
+    [ "$avail_bytes" -ge "$min_bytes" ] || fail "Insufficient space on $path: have $avail_bytes bytes, need $min_bytes bytes"
+}
+
+recreate_partitions() {
+    echo "Recreating partitions on $TARGET_DISK ..."
+    cleanup_mount "$MNT_INSTALL"
+    cleanup_mount "$MNT_STORAGE"
+    kill_block_device_holders "$TARGET_DISK"
+    swapoff -a 2>/dev/null || true
+    wipefs -a "$TARGET_DISK" || true
+    refresh_partition_table
+
+    parted "$TARGET_DISK" --script -- mklabel msdos
+    parted "$TARGET_DISK" --script -- mkpart primary ntfs 1MiB 50%
+    parted "$TARGET_DISK" --script -- mkpart primary ntfs 50% 100%
+    parted "$TARGET_DISK" --script -- set 1 boot on
+    refresh_partition_table
+
+    [ -b "$PART1" ] || fail "$PART1 was not created"
+    [ -b "$PART2" ] || fail "$PART2 was not created"
+
+    mkfs.ntfs -f "$PART1"
+    mkfs.ntfs -f "$PART2"
+
+    ensure_mount_dir "$MNT_INSTALL"
+    ensure_mount_dir "$MNT_STORAGE"
+    mount "$PART2" "$MNT_INSTALL"
+    mount "$PART1" "$MNT_STORAGE"
+
+    checkpoint_set partitions
+}
+
+ensure_partitions_ready() {
+    mount_existing_partitions
+    if [ "$RECREATE_DISK" -eq 1 ] || ! mountpoint -q "$MNT_INSTALL" || ! mountpoint -q "$MNT_STORAGE"; then
+        recreate_partitions
+    fi
+}
+
+verify_partition_layout() {
+    local part_info
+    part_info="$(parted -s "$TARGET_DISK" unit MiB print || true)"
+    echo "$part_info" | grep -q "Partition Table: msdos" || fail "Partition table is not msdos/MBR"
+    echo "$part_info" | grep -Eq "^ 1" || fail "Partition 1 missing"
+    echo "$part_info" | grep -Eq "^ 2" || fail "Partition 2 missing"
+
+    lsblk -no FSTYPE "$PART1" | grep -qi "ntfs" || fail "$PART1 is not NTFS"
+    lsblk -no FSTYPE "$PART2" | grep -qi "ntfs" || fail "$PART2 is not NTFS"
+
+    mountpoint -q "$MNT_INSTALL" || fail "$MNT_INSTALL is not mounted"
+    mountpoint -q "$MNT_STORAGE" || fail "$MNT_STORAGE is not mounted"
+}
+
+choose_download_dir() {
+    if mountpoint -q "$MNT_STORAGE" 2>/dev/null; then
+        echo "$MNT_STORAGE"
+    else
+        echo "/tmp"
+    fi
+}
+
 download_file() {
     local url="$1"
     local output="$2"
@@ -292,37 +342,41 @@ download_file() {
     if [ -f "$output" ] && [ "$FORCE_DOWNLOAD" -eq 0 ]; then
         local existing_size
         existing_size=$(stat -c%s "$output" 2>/dev/null || echo 0)
-        if [ "$existing_size" -gt 0 ] && [ "$existing_size" -lt $((10 * 1024 * 1024)) ]; then
-            rm -f "$output"
-        fi
-        if [ -f "$output" ]; then
+        if [ "$existing_size" -gt $((10 * 1024 * 1024)) ]; then
             echo "Using existing file: $output"
             return
         fi
+        rm -f "$output"
     fi
 
     echo "Downloading $(basename "$output") ..."
-    curl -fL --retry 5 --retry-delay 5 --continue-at - -o "$output" "$url"
+    if command_exists aria2c; then
+        aria2c --max-connection-per-server=8 --split=8 --min-split-size=1M \
+            --timeout=60 --retry-wait=5 --max-tries=5 --continue=true \
+            -o "$(basename "$output")" -d "$(dirname "$output")" "$url"
+    elif command_exists curl; then
+        curl -fL --retry 5 --retry-delay 5 --continue-at - -o "$output" "$url"
+    else
+        wget -O "$output" "$url"
+    fi
+
+    [ -s "$output" ] || fail "Downloaded file is empty: $output"
 }
 
 copy_windows_media() {
     local iso="$1"
     local loop_dir
     loop_dir="$(mktemp -d)"
-
-    cleanup() {
-        mountpoint -q "$loop_dir" && umount "$loop_dir" || true
-        rmdir "$loop_dir" 2>/dev/null || true
-    }
-    trap cleanup RETURN
+    trap 'mountpoint -q "'"$loop_dir"'" && umount "'"$loop_dir"'" || true; rmdir "'"$loop_dir"'" 2>/dev/null || true' RETURN
 
     mount -o loop "$iso" "$loop_dir"
     rsync -a --info=progress2 --human-readable --stats "$loop_dir"/ "$MNT_INSTALL"/
-    if [ ! -f "$MNT_INSTALL/bootmgr" ] || [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
-        echo "ERROR: Windows ISO extraction failed; $MNT_INSTALL/bootmgr or $MNT_INSTALL/sources/boot.wim is missing after rsync."
-        dump_checkpoint_state
-        exit 1
-    fi
+
+    [ -f "$MNT_INSTALL/bootmgr" ] || fail "Windows media copy failed: bootmgr missing"
+    [ -f "$MNT_INSTALL/sources/boot.wim" ] || fail "Windows media copy failed: boot.wim missing"
+    [ -f "$MNT_INSTALL/setup.exe" ] || echo "WARNING: setup.exe missing from copied media"
+    [ -f "$MNT_INSTALL/sources/install.wim" ] || [ -f "$MNT_INSTALL/sources/install.esd" ] || fail "install.wim/install.esd missing"
+
     checkpoint_set windows_extracted
     trap - RETURN
 }
@@ -331,23 +385,22 @@ copy_virtio_media() {
     local iso="$1"
     local loop_dir
     loop_dir="$(mktemp -d)"
-
-    cleanup() {
-        mountpoint -q "$loop_dir" && umount "$loop_dir" || true
-        rmdir "$loop_dir" 2>/dev/null || true
-    }
-    trap cleanup RETURN
+    trap 'mountpoint -q "'"$loop_dir"'" && umount "'"$loop_dir"'" || true; rmdir "'"$loop_dir"'" 2>/dev/null || true' RETURN
 
     mkdir -p "$MNT_INSTALL/sources/virtio"
     mount -o loop "$iso" "$loop_dir"
     rsync -a --info=progress2 --human-readable --stats "$loop_dir"/ "$MNT_INSTALL/sources/virtio"/
-    if [ -z "$(find "$MNT_INSTALL/sources/virtio" -type f 2>/dev/null | head -n 1)" ]; then
-        echo "ERROR: VirtIO extraction failed; no files found under $MNT_INSTALL/sources/virtio."
-        dump_checkpoint_state
-        exit 1
-    fi
+
+    find "$MNT_INSTALL/sources/virtio" -type f | head -n 1 >/dev/null || fail "VirtIO copy failed"
     checkpoint_set virtio_extracted
     trap - RETURN
+}
+
+verify_virtio_layout() {
+    local base="$MNT_INSTALL/sources/virtio"
+    [ -d "$base" ] || fail "VirtIO directory missing"
+    [ -f "$base/vioscsi/w11/amd64/vioscsi.inf" ] || [ -f "$base/amd64/w11/vioscsi.inf" ] || fail "Windows 11 VirtIO SCSI driver not found"
+    [ -f "$base/NetKVM/w11/amd64/netkvm.inf" ] || [ -f "$base/NetKVM/w11/amd64/netkvm.sys" ] || echo "WARNING: NetKVM Windows 11 driver not found"
 }
 
 xml_escape() {
@@ -358,90 +411,19 @@ xml_escape() {
         -e 's/"/\&quot;/g'
 }
 
-choose_download_dir() {
-    # Prefer the mounted installer storage partition if available.
-    if [ -n "$MNT_STORAGE" ] && mountpoint -q "$MNT_STORAGE" 2>/dev/null; then
-        echo "$MNT_STORAGE"
-        return
-    fi
-    echo "/tmp"
-}
+inspect_install_image() {
+    local install_src=""
+    [ -f "$MNT_INSTALL/sources/install.wim" ] && install_src="$MNT_INSTALL/sources/install.wim"
+    [ -z "$install_src" ] && [ -f "$MNT_INSTALL/sources/install.esd" ] && install_src="$MNT_INSTALL/sources/install.esd"
+    [ -n "$install_src" ] || fail "No install.wim or install.esd found"
 
-prepare_windows_media() {
-    local download_dir
-    download_dir=$(choose_download_dir)
-    if [ -z "$download_dir" ]; then
-        echo "ERROR: could not determine a download directory."
-        exit 1
-    fi
-    if [ "$download_dir" = "$MNT_STORAGE" ] || [ "$download_dir" = "/root/windisk" ]; then
-        if ! mountpoint -q "$download_dir" 2>/dev/null; then
-            echo "ERROR: $download_dir is not mounted."
-            exit 1
-        fi
-    fi
-    echo "Using download directory: $download_dir"
-    mkdir -p "$download_dir"
-    local windows_iso="$download_dir/Windows.iso"
-    local virtio_iso="$download_dir/VirtIO.iso"
-    WINDOWS_ISO_URL="$(prompt_value "$WINDOWS_ISO_URL" "Enter Windows ISO URL: ")"
-    VIRTIO_ISO_URL="$(prompt_value "$VIRTIO_ISO_URL" "Enter VirtIO ISO URL [default]: ")"
-
-    [ -n "$WINDOWS_ISO_URL" ] || { echo "ERROR: Windows ISO URL is required."; exit 1; }
-    [ -n "$VIRTIO_ISO_URL" ] || VIRTIO_ISO_URL="$DEFAULT_VIRTIO_ISO_URL"
-
-    if [ "$FORCE_DOWNLOAD" -eq 1 ]; then
-        rm -f "$STATE_DIR/downloads_completed"
-    fi
-
-    if checkpoint_done downloads_completed; then
-        if [ -f "$windows_iso" ] && [ -f "$virtio_iso" ]; then
-            echo "Using existing downloaded ISOs."
-        else
-            echo "WARNING: downloads_completed checkpoint is stale; redownloading ISOs."
-            rm -f "$STATE_DIR/downloads_completed"
-        fi
-    fi
-
-    if ! checkpoint_done downloads_completed; then
-        download_file "$WINDOWS_ISO_URL" "$windows_iso"
-        download_file "$VIRTIO_ISO_URL" "$virtio_iso"
-        checkpoint_set downloads_completed
-    fi
-
-    if checkpoint_done windows_extracted; then
-        if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
-            echo "WARNING: windows_extracted checkpoint is stale; re-extracting Windows media."
-            rm -f "$STATE_DIR/windows_extracted"
-        else
-            echo "Using existing Windows media copy."
-        fi
-    fi
-    if ! checkpoint_done windows_extracted; then
-        copy_windows_media "$windows_iso"
-    fi
-
-    if checkpoint_done virtio_extracted; then
-        if [ ! -d "$MNT_INSTALL/sources/virtio" ] || [ -z "$(find "$MNT_INSTALL/sources/virtio" -type f 2>/dev/null | head -n 1)" ]; then
-            echo "WARNING: virtio_extracted checkpoint is stale; re-extracting VirtIO drivers."
-            rm -f "$STATE_DIR/virtio_extracted"
-        else
-            echo "Using existing VirtIO driver copy."
-        fi
-    fi
-    if ! checkpoint_done virtio_extracted; then
-        copy_virtio_media "$virtio_iso"
-    fi
-
-    if checkpoint_done boot_wim_patched; then
-        if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
-            echo "WARNING: boot_wim_patched checkpoint is stale; clearing patch checkpoint."
-            rm -f "$STATE_DIR/boot_wim_patched"
-        fi
-    fi
-
-    write_ei_cfg
-    write_autounattend_xml
+    wimlib-imagex info "$install_src" > "$STATE_DIR/install-image-info.txt"
+    grep -Fq "$WINDOWS_EDITION" "$STATE_DIR/install-image-info.txt" || {
+        echo "Available image names:"
+        grep '^Name:' "$STATE_DIR/install-image-info.txt" || true
+        fail "Requested edition '$WINDOWS_EDITION' not found in install image"
+    }
+    checkpoint_set install_image_inspected
 }
 
 write_ei_cfg() {
@@ -454,6 +436,7 @@ Retail
 [VL]
 0
 EOF
+    checkpoint_set ei_cfg_written
 }
 
 write_bypass_script() {
@@ -479,6 +462,8 @@ reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\OOBE" /v HideOnlineAccou
 exit /b 0
 EOF
 
+    [ -f "$MNT_INSTALL/sources/bypass.cmd" ] || fail "Failed to write bypass.cmd"
+    [ -f "$oem_dir/SetupComplete.cmd" ] || fail "Failed to write SetupComplete.cmd"
     checkpoint_set bypass_ready
 }
 
@@ -550,14 +535,12 @@ write_autounattend_xml() {
       </ImageInstall>
     </component>
   </settings>
-
   <settings pass="specialize">
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <ComputerName>*</ComputerName>
       <TimeZone>$esc_tz</TimeZone>
     </component>
   </settings>
-
   <settings pass="oobeSystem">
     <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <InputLocale>$esc_locale</InputLocale>
@@ -604,6 +587,14 @@ write_autounattend_xml() {
   </settings>
 </unattend>
 EOF
+
+    [ -f "$output_path" ] || fail "Autounattend.xml was not created"
+    xmllint --noout "$output_path" || fail "Autounattend.xml is not valid XML"
+    grep -q "<DiskID>0</DiskID>" "$output_path" || fail "Autounattend.xml missing DiskID 0"
+    grep -q "<PartitionID>1</PartitionID>" "$output_path" || fail "Autounattend.xml missing PartitionID 1"
+    grep -q "<InstallToAvailablePartition>false</InstallToAvailablePartition>" "$output_path" || fail "Autounattend.xml missing fixed install target"
+    grep -q "<HideOnlineAccountScreens>true</HideOnlineAccountScreens>" "$output_path" || fail "Autounattend.xml missing OOBE suppression"
+    checkpoint_set autounattend_written
 }
 
 create_bypass_cmd() {
@@ -656,28 +647,12 @@ EOF
 }
 
 patch_boot_wim() {
-    if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
-        echo "WARNING: $MNT_INSTALL/sources/boot.wim not found. Attempting to recover installer media."
-        dump_checkpoint_state
-        mount_existing_partitions
-        if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
-            prepare_windows_media
-        fi
-    fi
-
-    [ -f "$MNT_INSTALL/sources/boot.wim" ] || {
-        echo "ERROR: boot.wim not found after recovery attempt."
-        dump_checkpoint_state
-        ls -la "$MNT_INSTALL/sources" 2>/dev/null || true
-        exit 1
-    }
-
-    echo "Inspecting boot.wim images..."
-    wimlib-imagex info "$MNT_INSTALL/sources/boot.wim" > /tmp/bootwim_info.txt
+    [ -f "$MNT_INSTALL/sources/boot.wim" ] || fail "boot.wim not found"
+    create_bypass_cmd /tmp/bypass.cmd
 
     local image_count auto_image_index
+    wimlib-imagex info "$MNT_INSTALL/sources/boot.wim" > /tmp/bootwim_info.txt
     image_count=$(grep -c '^Index:' /tmp/bootwim_info.txt || true)
-
     if [ "$image_count" -ge 2 ]; then
         auto_image_index=2
     else
@@ -703,9 +678,8 @@ patch_boot_wim() {
     fi
     rm -f /tmp/bootwim_info.txt
 
-    [ -n "$auto_image_index" ] || { echo "ERROR: Could not determine boot.wim image index."; exit 1; }
+    [ -n "$auto_image_index" ] || fail "Could not determine boot.wim image index"
 
-    create_bypass_cmd /tmp/bypass.cmd
     cat > /tmp/wimcmd.txt <<EOF
 add $MNT_INSTALL/sources/virtio /virtio
 add /tmp/bypass.cmd /Windows/System32/bypass.cmd
@@ -737,6 +711,7 @@ menuentry "windows installer (BIOS)" {
     boot
 }
 EOF
+    grep -q 'chainloader /bootmgr' "$MNT_INSTALL/boot/grub/grub.cfg" || fail "grub.cfg missing chainloader stanza"
     checkpoint_set grub_cfg
 }
 
@@ -748,17 +723,70 @@ install_grub() {
     checkpoint_set grub_installed
 }
 
+verify_windows_media_layout() {
+    [ -f "$MNT_INSTALL/bootmgr" ] || fail "Missing bootmgr"
+    [ -f "$MNT_INSTALL/sources/boot.wim" ] || fail "Missing boot.wim"
+    [ -f "$MNT_INSTALL/sources/install.wim" ] || [ -f "$MNT_INSTALL/sources/install.esd" ] || fail "Missing install.wim/install.esd"
+    [ -f "$MNT_INSTALL/Autounattend.xml" ] || fail "Missing Autounattend.xml"
+    [ -d "$MNT_INSTALL/sources/virtio" ] || fail "Missing VirtIO directory"
+}
+
 verify_ready() {
-    [ -f "$MNT_INSTALL/bootmgr" ] || { echo "ERROR: Missing $MNT_INSTALL/bootmgr"; exit 1; }
-    [ -f "$MNT_INSTALL/sources/boot.wim" ] || { echo "ERROR: Missing $MNT_INSTALL/sources/boot.wim"; exit 1; }
-    [ -d "$MNT_INSTALL/sources/virtio" ] || { echo "ERROR: Missing $MNT_INSTALL/sources/virtio"; exit 1; }
-    [ -f "$MNT_INSTALL/boot/grub/grub.cfg" ] || { echo "ERROR: Missing grub.cfg"; exit 1; }
+    verify_partition_layout
+    verify_windows_media_layout
+    verify_virtio_layout
 
-    grep -q 'chainloader /bootmgr' "$MNT_INSTALL/boot/grub/grub.cfg" \
-        || { echo "ERROR: GRUB is not configured to chainload /bootmgr"; exit 1; }
+    [ -f "$MNT_INSTALL/sources/boot.wim.virtio_patched" ] || fail "boot.wim was not patched"
+    [ -f "$MNT_INSTALL/boot/grub/grub.cfg" ] || fail "Missing grub.cfg"
 
-    echo "All required installer files are present."
+    checkpoint_set final_verified
+
+    echo "All required installer files and checks are present."
+    echo "Disk: $TARGET_DISK"
+    echo "Target Windows partition: $PART1"
+    echo "Installer partition: $PART2"
+    echo "Edition: $WINDOWS_EDITION"
     echo "Reboot the VPS and select: windows installer (BIOS)"
+}
+
+prepare_windows_media() {
+    local download_dir
+    download_dir=$(choose_download_dir)
+    mkdir -p "$download_dir"
+
+    local windows_iso="$download_dir/Windows.iso"
+    local virtio_iso="$download_dir/VirtIO.iso"
+
+    WINDOWS_ISO_URL="$(prompt_value "$WINDOWS_ISO_URL" "Enter Windows ISO URL: ")"
+    VIRTIO_ISO_URL="$(prompt_value "$VIRTIO_ISO_URL" "Enter VirtIO ISO URL [default]: ")"
+
+    [ -n "$WINDOWS_ISO_URL" ] || fail "Windows ISO URL is required"
+    [ -n "$VIRTIO_ISO_URL" ] || VIRTIO_ISO_URL="$DEFAULT_VIRTIO_ISO_URL"
+
+    if [ "$FORCE_DOWNLOAD" -eq 1 ]; then
+        rm -f "$STATE_DIR/downloads_completed" "$STATE_DIR/windows_extracted" "$STATE_DIR/virtio_extracted" \
+              "$STATE_DIR/install_image_inspected" "$STATE_DIR/boot_wim_patched"
+    fi
+
+    if ! checkpoint_done downloads_completed; then
+        download_file "$WINDOWS_ISO_URL" "$windows_iso"
+        download_file "$VIRTIO_ISO_URL" "$virtio_iso"
+        checkpoint_set downloads_completed
+    fi
+
+    [ -f "$windows_iso" ] || fail "Windows ISO missing after download"
+    [ -f "$virtio_iso" ] || fail "VirtIO ISO missing after download"
+
+    if ! checkpoint_done windows_extracted; then
+        copy_windows_media "$windows_iso"
+    fi
+    if ! checkpoint_done virtio_extracted; then
+        copy_virtio_media "$virtio_iso"
+    fi
+
+    inspect_install_image
+    write_ei_cfg
+    write_autounattend_xml
 }
 
 main() {
@@ -773,6 +801,7 @@ main() {
     fi
 
     ensure_partitions_ready
+    verify_partition_layout
     prepare_windows_media
     write_bypass_script
     patch_boot_wim
