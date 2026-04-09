@@ -226,7 +226,7 @@ choose_disk_download_dir() {
     fi
 
     if ! mountpoint -q /mnt 2>/dev/null && [[ -b /dev/sda2 ]]; then
-        echo "Attempting to mount /dev/sda2 at /mnt for disk fallback..."
+        echo "Attempting to mount /dev/sda2 at /mnt for disk fallback..." >&2
         mkdir -p /mnt
         mount /dev/sda2 /mnt 2>/dev/null || true
     fi
