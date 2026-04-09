@@ -102,11 +102,17 @@ cleanup_mount() {
 kill_block_device_holders() {
     local dev="$1"
     if [ -b "$dev" ] && command_exists lsof; then
-        local pids
-        pids=$(lsof "$dev" 2>/dev/null | awk 'NR>1 {print $2}' | sort -u) || true
-        if [ -n "$pids" ]; then
-            echo "Killing processes holding $dev: $pids"
-            kill -TERM $pids 2>/dev/null || true
+        local pids=()
+        local target
+        for target in "$dev" "${dev}1" "${dev}2"; do
+            if [ -b "$target" ]; then
+                pids+=( $(lsof "$target" 2>/dev/null | awk 'NR>1 {print $2}') )
+            fi
+        done
+        pids=( $(printf '%s\n' "${pids[@]}" | sort -u) )
+        if [ "${#pids[@]}" -gt 0 ]; then
+            echo "Killing processes holding $dev partitions: ${pids[*]}"
+            kill -TERM "${pids[@]}" 2>/dev/null || true
             sleep 1
         fi
     fi
@@ -224,6 +230,7 @@ recreate_partitions() {
     cleanup_mount "$MNT_INSTALL"
     cleanup_mount "$MNT_STORAGE"
     kill_block_device_holders "$TARGET_DISK"
+    refresh_partition_table
 
     parted "$TARGET_DISK" --script -- mklabel msdos
     parted "$TARGET_DISK" --script -- mkpart primary ntfs 1MiB 50%
