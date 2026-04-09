@@ -112,8 +112,20 @@ kill_block_device_holders() {
     fi
 }
 
+ensure_mount_dir() {
+    local p="$1"
+    if ! mkdir -p "$p" 2>/dev/null; then
+        echo "WARNING: unable to create mount directory $p; attempting stale mount cleanup"
+        cleanup_mount "$p"
+        umount -l "$p" 2>/dev/null || true
+        rm -rf "$p" 2>/dev/null || true
+        mkdir -p "$p"
+    fi
+}
+
 mount_existing_partitions() {
-    mkdir -p "$MNT_INSTALL" "$MNT_STORAGE"
+    ensure_mount_dir "$MNT_INSTALL"
+    ensure_mount_dir "$MNT_STORAGE"
     if [ -b "$PART2" ] && ! mountpoint -q "$MNT_INSTALL"; then
         mount "$PART2" "$MNT_INSTALL" 2>/dev/null || true
     fi
