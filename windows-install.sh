@@ -106,7 +106,7 @@ kill_block_device_holders() {
         local target
         for target in "$dev" "${dev}1" "${dev}2"; do
             if [ -b "$target" ]; then
-                pids+=( $(lsof "$target" 2>/dev/null | awk 'NR>1 {print $2}') )
+                pids+=( $(lsof "$target" 2>/dev/null | awk 'NR>1 {print $2}' || true) )
             fi
         done
         pids=( $(printf '%s\n' "${pids[@]}" | sort -u) )
