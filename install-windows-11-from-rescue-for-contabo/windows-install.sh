@@ -340,8 +340,17 @@ get_content_length() {
 retry_download() {
     local url="$1"
     local output="$2"
+    local dir
     local ua
     local rc=1
+
+    dir=$(dirname "$output")
+    if [[ -n "$dir" ]]; then
+        mkdir -p "$dir" || {
+            echo "ERROR: Failed to create download directory $dir"
+            return 1
+        }
+    fi
 
     if command -v aria2c >/dev/null 2>&1; then
         aria2c "${ARIA2_OPTS[@]}" -o "$output" "$url"
