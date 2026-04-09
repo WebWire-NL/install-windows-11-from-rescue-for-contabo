@@ -394,6 +394,15 @@ REQUIRED_DISK_BYTES=$((TOTAL_ISO_SIZE_BYTES + TOTAL_ISO_SIZE_BYTES / 5))
 WINDOWS_ISO_DEST="/root/windisk/Windows.iso"
 VIRTIO_ISO_DEST="/root/windisk/VirtIO.iso"
 
+if mountpoint -q /mnt/zram0 2>/dev/null; then
+    ZRAM_AVAIL_KB=$(df --output=avail /mnt/zram0 2>/dev/null | tail -n 1 | tr -d ' ')
+    ZRAM_AVAIL_MB=$((ZRAM_AVAIL_KB / 1024))
+    if [[ "$ZRAM_AVAIL_MB" -lt "$TOTAL_ISO_SIZE_MB" ]]; then
+        echo "Existing zram mount has insufficient usable space (${ZRAM_AVAIL_MB}MB) for ${TOTAL_ISO_SIZE_MB}MB. Resetting zram state."
+        cleanup_zram
+    fi
+fi
+
 echo "Evaluating whether zram-backed download is possible..."
 AVAILABLE_RAM_MB=$(available_ram_mb)
 SAFE_RAM_MB=$((AVAILABLE_RAM_MB > ZRAM_MARGIN_MB ? AVAILABLE_RAM_MB - ZRAM_MARGIN_MB : 0))
