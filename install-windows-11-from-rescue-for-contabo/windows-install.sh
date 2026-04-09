@@ -297,9 +297,34 @@ ARIA2_OPTS=(
     --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 )
 
+USER_AGENTS=(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36"
+)
+
+get_content_length() {
+    local url="$1"
+    local size
+
+    for ua in "${USER_AGENTS[@]}"; do
+        size=$(curl -sSLI --max-redirs 10 -A "$ua" "$url" 2>/dev/null | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1)
+        if [[ -n "$size" ]]; then
+            echo "$size"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 retry_download() {
     local url="$1"
     local output="$2"
+    local ua
+    local rc=1
 
     if command -v aria2c >/dev/null 2>&1; then
         aria2c "${ARIA2_OPTS[@]}" -o "$output" "$url"
@@ -307,13 +332,21 @@ retry_download() {
     fi
 
     if command -v wget >/dev/null 2>&1; then
-        wget -O "$output" "$url"
-        return $?
+        for ua in "${USER_AGENTS[@]}"; do
+            echo "Trying wget with UA: $ua"
+            wget --user-agent="$ua" -O "$output" "$url" && return 0
+            rc=$?
+        done
+        return $rc
     fi
 
     if command -v curl >/dev/null 2>&1; then
-        curl -L -o "$output" "$url"
-        return $?
+        for ua in "${USER_AGENTS[@]}"; do
+            echo "Trying curl with UA: $ua"
+            curl -L -A "$ua" -o "$output" "$url" && return 0
+            rc=$?
+        done
+        return $rc
     fi
 
     echo "ERROR: No download tool available for $url"
@@ -323,14 +356,14 @@ retry_download() {
 WINDOWS_ISO_URL="$ISO_URL"
 
 TOTAL_ISO_SIZE_BYTES=0
-WINDOWS_ISO_SIZE=$(curl -sSLI --max-redirs 10 "$WINDOWS_ISO_URL" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1)
+WINDOWS_ISO_SIZE=$(get_content_length "$WINDOWS_ISO_URL")
 if [[ -z "$WINDOWS_ISO_SIZE" ]]; then
     echo "ERROR: Unable to determine Windows ISO size from HTTP headers."
     exit 1
 fi
 
 VIRTIO_ISO_URL="$VIRTIO_ISO_URL"
-VIRTIO_ISO_SIZE=$(curl -sSLI --max-redirs 10 "$VIRTIO_ISO_URL" | awk 'tolower($1)=="content-length:" {print $2}' | tr -d '\r' | tail -n1)
+VIRTIO_ISO_SIZE=$(get_content_length "$VIRTIO_ISO_URL")
 if [[ -z "$VIRTIO_ISO_SIZE" ]]; then
     echo "ERROR: Unable to determine VirtIO ISO size from HTTP headers."
     exit 1
