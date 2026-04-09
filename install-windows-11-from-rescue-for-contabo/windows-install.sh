@@ -388,6 +388,7 @@ fi
 TOTAL_ISO_SIZE_BYTES=$((WINDOWS_ISO_SIZE + VIRTIO_ISO_SIZE))
 TOTAL_ISO_SIZE_MB=$(((TOTAL_ISO_SIZE_BYTES + 1024*1024 - 1) / 1024 / 1024))
 ZRAM_MARGIN_MB=512
+ZRAM_DISKSIZE_MB=$((TOTAL_ISO_SIZE_MB + 512))
 REQUIRED_DISK_BYTES=$((TOTAL_ISO_SIZE_BYTES + TOTAL_ISO_SIZE_BYTES / 5))
 
 WINDOWS_ISO_DEST="/root/windisk/Windows.iso"
@@ -396,12 +397,12 @@ VIRTIO_ISO_DEST="/root/windisk/VirtIO.iso"
 echo "Evaluating whether zram-backed download is possible..."
 AVAILABLE_RAM_MB=$(available_ram_mb)
 SAFE_RAM_MB=$((AVAILABLE_RAM_MB > ZRAM_MARGIN_MB ? AVAILABLE_RAM_MB - ZRAM_MARGIN_MB : 0))
-if [[ "$SAFE_RAM_MB" -gt "$TOTAL_ISO_SIZE_MB" ]]; then
+if [[ "$SAFE_RAM_MB" -gt "$ZRAM_DISKSIZE_MB" ]]; then
     echo "Detected $AVAILABLE_RAM_MB MB available RAM, enough for zram download of ${TOTAL_ISO_SIZE_MB}MB plus margin."
     if mountpoint -q /mnt/zram0 2>/dev/null; then
         ZRAM_AVAIL_KB=$(df --output=avail /mnt/zram0 2>/dev/null | tail -n 1 | tr -d ' ')
         ZRAM_AVAIL_MB=$((ZRAM_AVAIL_KB / 1024))
-        if [[ "$ZRAM_AVAIL_MB" -ge "$TOTAL_ISO_SIZE_MB" ]]; then
+        if [[ "$ZRAM_AVAIL_MB" -ge "$ZRAM_DISKSIZE_MB" ]]; then
             echo "Existing zram mount has enough free space (${ZRAM_AVAIL_MB}MB). Reusing /mnt/zram0."
             DOWNLOAD_DIR="/mnt/zram0/windisk"
             mkdir -p "$DOWNLOAD_DIR"
@@ -417,10 +418,10 @@ if [[ "$SAFE_RAM_MB" -gt "$TOTAL_ISO_SIZE_MB" ]]; then
 
         if modprobe zram >/dev/null 2>&1; then
             echo lz4 > /sys/block/zram0/comp_algorithm || true
-            echo "${TOTAL_ISO_SIZE_MB}M" > /sys/block/zram0/disksize
+            echo "${ZRAM_DISKSIZE_MB}M" > /sys/block/zram0/disksize
             if [[ $(cat /sys/block/zram0/disksize 2>/dev/null || echo 0) -gt 0 ]]; then
                 if mkfs.ext4 -q /dev/zram0 && mkdir -p /mnt/zram0 && mount /dev/zram0 /mnt/zram0; then
-                    echo "zram mounted at /mnt/zram0."
+                            echo "zram mounted at /mnt/zram0."
                     DOWNLOAD_DIR="/mnt/zram0/windisk"
                     mkdir -p "$DOWNLOAD_DIR"
                 else
@@ -516,8 +517,27 @@ fi
 
 echo "Downloading VirtIO ISO to $VIRTIO_ISO..."
 if ! retry_download "$VIRTIO_ISO_URL" "$VIRTIO_ISO"; then
-    echo "ERROR: VirtIO ISO download failed."
-    exit 1
+    if [[ "$DOWNLOAD_DIR" == "/mnt/zram0/windisk" ]]; then
+        echo "WARNING: VirtIO ISO download failed on zram; falling back to disk-based download."
+        mkdir -p /root/windisk
+        if [[ -f "$WINDOWS_ISO" ]]; then
+            echo "Copying downloaded Windows ISO from zram to /root/windisk/Windows.iso"
+            cp -av "$WINDOWS_ISO" /root/windisk/Windows.iso
+            WINDOWS_ISO="/root/windisk/Windows.iso"
+        fi
+        cleanup_zram
+        DOWNLOAD_DIR="/root/windisk"
+        mkdir -p "$DOWNLOAD_DIR"
+        VIRTIO_ISO="$DOWNLOAD_DIR/VirtIO.iso"
+        echo "Retrying VirtIO ISO download to $VIRTIO_ISO..."
+        if ! retry_download "$VIRTIO_ISO_URL" "$VIRTIO_ISO"; then
+            echo "ERROR: VirtIO ISO download failed even after falling back to disk."
+            exit 1
+        fi
+    else
+        echo "ERROR: VirtIO ISO download failed."
+        exit 1
+    fi
 fi
 
 if [[ ! -f "$WINDOWS_ISO" || ! -f "$VIRTIO_ISO" ]]; then
