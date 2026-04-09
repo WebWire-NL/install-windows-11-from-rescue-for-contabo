@@ -1,4 +1,5 @@
 #!/bin/bash
+# ALTERNATE SCRIPT: alternate copy with auto-install dependency helper
 set -euo pipefail
 
 NO_PROMPT=0
@@ -94,6 +95,36 @@ package_for_command() {
 
 download_tool_available() {
     command -v aria2c >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || command -v curl >/dev/null 2>&1
+}
+
+available_ram_mb() {
+    if command -v free >/dev/null 2>&1; then
+        free -m | awk '/^Mem:/ {print $7}'
+    elif [[ -r /proc/meminfo ]]; then
+        awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo
+    else
+        echo 0
+    fi
+}
+
+cleanup_zram() {
+    if mountpoint -q /mnt/zram0 2>/dev/null; then
+        echo "Unmounting stale zram at /mnt/zram0..."
+        umount /mnt/zram0 || true
+    fi
+    if [[ -e /dev/zram0 ]]; then
+        swapoff /dev/zram0 2>/dev/null || true
+        echo 1 > /sys/block/zram0/reset 2>/dev/null || true
+    fi
+    rm -rf /mnt/zram0 2>/dev/null || true
+}
+
+free_memory() {
+    echo "Attempting to free file cache memory..."
+    sync
+    if [[ -w /proc/sys/vm/drop_caches ]]; then
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+    fi
 }
 
 install_packages_for_commands() {
@@ -199,6 +230,16 @@ ensure_required_tools() {
     fi
 }
 
+force_unmount_sda1() {
+    local dev="/dev/sda1"
+    if grep -q -E "^${dev} " /proc/mounts 2>/dev/null || mountpoint -q "$dev" 2>/dev/null; then
+        echo "Force-unmounting $dev first..."
+        umount "$dev" 2>/dev/null || true
+        umount -l "$dev" 2>/dev/null || true
+        sleep 1
+    fi
+}
+
 verify_iso_md5() {
     local file="$1"
     local expected="$2"
@@ -224,9 +265,12 @@ ensure_required_tools
 
 echo "Deactivating swap and unmounting all /dev/sda partitions..."
 swapoff -a || true
-for part in $(lsblk -ln -o NAME | grep '^sda' | grep -v '^sda$'); do
+force_unmount_sda1
+for part in $(lsblk -ln -o NAME | grep '^sda' | grep -v '^sda$' | grep -v '^sda1$'); do
     umount /dev/$part 2>/dev/null || true
+    umount -l /dev/$part 2>/dev/null || true
 done
+force_unmount_sda1
 echo "All /dev/sda partitions unmounted and swap deactivated."
 
 SWAPFILE="/swapfile"
@@ -294,51 +338,105 @@ fi
 
 TOTAL_ISO_SIZE_BYTES=$((WINDOWS_ISO_SIZE + VIRTIO_ISO_SIZE))
 TOTAL_ISO_SIZE_MB=$(((TOTAL_ISO_SIZE_BYTES + 1024*1024 - 1) / 1024 / 1024))
+ZRAM_MARGIN_MB=512
+REQUIRED_DISK_BYTES=$((TOTAL_ISO_SIZE_BYTES + TOTAL_ISO_SIZE_BYTES / 5))
 
-echo "Skipping zram support; using disk-based downloads only."
+WINDOWS_ISO_DEST="/root/windisk/Windows.iso"
+VIRTIO_ISO_DEST="/root/windisk/VirtIO.iso"
+
+echo "Evaluating whether zram-backed download is possible..."
+AVAILABLE_RAM_MB=$(available_ram_mb)
+SAFE_RAM_MB=$((AVAILABLE_RAM_MB > ZRAM_MARGIN_MB ? AVAILABLE_RAM_MB - ZRAM_MARGIN_MB : 0))
+if [[ "$SAFE_RAM_MB" -gt "$TOTAL_ISO_SIZE_MB" ]]; then
+    echo "Detected $AVAILABLE_RAM_MB MB available RAM, enough for zram download of ${TOTAL_ISO_SIZE_MB}MB plus margin."
+    if mountpoint -q /mnt/zram0 2>/dev/null; then
+        ZRAM_AVAIL_KB=$(df --output=avail /mnt/zram0 2>/dev/null | tail -n 1 | tr -d ' ')
+        ZRAM_AVAIL_MB=$((ZRAM_AVAIL_KB / 1024))
+        if [[ "$ZRAM_AVAIL_MB" -ge "$TOTAL_ISO_SIZE_MB" ]]; then
+            echo "Existing zram mount has enough free space (${ZRAM_AVAIL_MB}MB). Reusing /mnt/zram0."
+            DOWNLOAD_DIR="/mnt/zram0/windisk"
+            mkdir -p "$DOWNLOAD_DIR"
+        else
+            echo "Existing zram does not have enough free space (${ZRAM_AVAIL_MB}MB) for ${TOTAL_ISO_SIZE_MB}MB. Resetting zram state."
+            cleanup_zram
+        fi
+    fi
+    if [[ -z "${DOWNLOAD_DIR:-}" ]]; then
+        echo "Allocating zram for ISO downloads..."
+        cleanup_zram
+        free_memory
+
+        if modprobe zram >/dev/null 2>&1; then
+            echo lz4 > /sys/block/zram0/comp_algorithm || true
+            echo "${TOTAL_ISO_SIZE_MB}M" > /sys/block/zram0/disksize
+            if [[ $(cat /sys/block/zram0/disksize 2>/dev/null || echo 0) -gt 0 ]]; then
+                if mkfs.ext4 -q /dev/zram0 && mkdir -p /mnt/zram0 && mount /dev/zram0 /mnt/zram0; then
+                    echo "zram mounted at /mnt/zram0."
+                    DOWNLOAD_DIR="/mnt/zram0/windisk"
+                    mkdir -p "$DOWNLOAD_DIR"
+                else
+                    echo "WARNING: zram format or mount failed. Falling back to disk."
+                    cleanup_zram
+                fi
+            else
+                echo "WARNING: zram disksize remained 0 after initialization. Falling back to disk."
+                cleanup_zram
+            fi
+        else
+            echo "WARNING: zram modprobe failed. Falling back to disk."
+        fi
+    fi
+else
+    echo "Not enough available RAM ($AVAILABLE_RAM_MB MB) for zram download of ${TOTAL_ISO_SIZE_MB}MB. Falling back to disk download."
+fi
 
 if [[ "$CHECK_ONLY" -eq 1 ]]; then
-    echo "CHECK-ONLY: disk-only mode"
+    if [[ -n "${DOWNLOAD_DIR:-}" && "$DOWNLOAD_DIR" == "/mnt/zram0/windisk" ]]; then
+        echo "CHECK-ONLY: zram would be used for downloads."
+    else
+        echo "CHECK-ONLY: disk-only mode"
+    fi
     exit 0
 fi
 
-DOWNLOAD_DIR="/tmp/windisk"
-REQUIRED_DISK_BYTES=$((TOTAL_ISO_SIZE_BYTES + TOTAL_ISO_SIZE_BYTES / 5))
-
-TMP_AVAIL=$(df --output=avail /tmp 2>/dev/null | tail -n 1 || echo 0)
-TMP_AVAIL_BYTES=$((TMP_AVAIL * 1024))
-if [[ "$TMP_AVAIL_BYTES" -ge "$REQUIRED_DISK_BYTES" ]]; then
-    echo "Using /tmp for ISO downloads because enough local temporary space is available."
-else
-    echo "/tmp does not have enough space for ISO downloads. Checking /mnt..."
-    if mountpoint -q /mnt 2>/dev/null; then
-        MNT_AVAIL=$(df --output=avail /mnt | tail -n 1)
-        MNT_AVAIL_BYTES=$((MNT_AVAIL * 1024))
-        if [[ "$MNT_AVAIL_BYTES" -ge "$REQUIRED_DISK_BYTES" ]]; then
-            echo "Using /mnt for ISO downloads because /tmp has insufficient space."
-            DOWNLOAD_DIR="/mnt/windisk"
+if [[ -z "${DOWNLOAD_DIR:-}" ]]; then
+    echo "Using disk-based downloads because zram is unavailable."
+    DOWNLOAD_DIR="/tmp/windisk"
+    TMP_AVAIL=$(df --output=avail /tmp 2>/dev/null | tail -n 1 || echo 0)
+    TMP_AVAIL_BYTES=$((TMP_AVAIL * 1024))
+    if [[ "$TMP_AVAIL_BYTES" -ge "$REQUIRED_DISK_BYTES" ]]; then
+        echo "Using /tmp for ISO downloads because enough local temporary space is available."
+    else
+        echo "/tmp does not have enough space for ISO downloads. Checking /mnt..."
+        if mountpoint -q /mnt 2>/dev/null; then
+            MNT_AVAIL=$(df --output=avail /mnt 2>/dev/null | tail -n 1)
+            MNT_AVAIL_BYTES=$((MNT_AVAIL * 1024))
+            if [[ "$MNT_AVAIL_BYTES" -ge "$REQUIRED_DISK_BYTES" ]]; then
+                echo "Using /mnt for ISO downloads because /tmp has insufficient space."
+                DOWNLOAD_DIR="/mnt/windisk"
+            else
+                echo "Checking / for available space as final fallback..."
+                ROOT_AVAIL=$(df --output=avail / 2>/dev/null | tail -n 1)
+                ROOT_AVAIL_BYTES=$((ROOT_AVAIL * 1024))
+                if [[ "$ROOT_AVAIL_BYTES" -ge "$REQUIRED_DISK_BYTES" ]]; then
+                    echo "Using /root for ISO downloads because it still has enough space."
+                    DOWNLOAD_DIR="/root/windisk"
+                else
+                    echo "ERROR: Not enough space on /tmp, /mnt, or / for ISO downloads."
+                    exit 1
+                fi
+            fi
         else
-            echo "Checking / for available space as final fallback..."
-            ROOT_AVAIL=$(df --output=avail / | tail -n 1)
+            echo "WARNING: /tmp has insufficient space and /mnt is not mounted; checking / root disk..."
+            ROOT_AVAIL=$(df --output=avail / 2>/dev/null | tail -n 1)
             ROOT_AVAIL_BYTES=$((ROOT_AVAIL * 1024))
             if [[ "$ROOT_AVAIL_BYTES" -ge "$REQUIRED_DISK_BYTES" ]]; then
                 echo "Using /root for ISO downloads because it still has enough space."
                 DOWNLOAD_DIR="/root/windisk"
             else
-                echo "ERROR: Not enough space on /tmp, /mnt, or / for ISO downloads."
+                echo "ERROR: /tmp has insufficient space, /mnt is unavailable, and / has insufficient space."
                 exit 1
             fi
-        fi
-    else
-        echo "WARNING: /tmp has insufficient space and /mnt is not mounted; checking / root disk..."
-        ROOT_AVAIL=$(df --output=avail / | tail -n 1)
-        ROOT_AVAIL_BYTES=$((ROOT_AVAIL * 1024))
-        if [[ "$ROOT_AVAIL_BYTES" -ge "$REQUIRED_DISK_BYTES" ]]; then
-            echo "Using /root for ISO downloads because it still has enough space."
-            DOWNLOAD_DIR="/root/windisk"
-        else
-            echo "ERROR: /tmp has insufficient space, /mnt is unavailable, and / has insufficient space."
-            exit 1
         fi
     fi
 fi
@@ -383,4 +481,14 @@ verify_iso_md5 "$VIRTIO_ISO" "$VIRTIO_ISO_MD5"
 
 echo "Windows ISO downloaded successfully to $WINDOWS_ISO."
 echo "VirtIO ISO downloaded successfully to $VIRTIO_ISO."
+
+if [[ "$DOWNLOAD_DIR" == "/mnt/zram0/windisk" ]]; then
+    mkdir -p "$(dirname "$WINDOWS_ISO_DEST")"
+    echo "Copying ISOs from zram to $WINDOWS_ISO_DEST and $VIRTIO_ISO_DEST..."
+    cp -av "$WINDOWS_ISO" "$WINDOWS_ISO_DEST"
+    cp -av "$VIRTIO_ISO" "$VIRTIO_ISO_DEST"
+    WINDOWS_ISO="$WINDOWS_ISO_DEST"
+    VIRTIO_ISO="$VIRTIO_ISO_DEST"
+    echo "ISOs copied to $WINDOWS_ISO_DEST and $VIRTIO_ISO_DEST."
+fi
 
