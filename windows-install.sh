@@ -283,7 +283,7 @@ recreate_partitions() {
     cleanup_mount "$MNT_STORAGE"
     kill_block_device_holders "$TARGET_DISK"
     swapoff -a 2>/dev/null || true
-    wipefs -a "$TARGET_DISK" || true
+    delete_all_partitions
     refresh_partition_table
 
     parted "$TARGET_DISK" --script -- mklabel msdos
