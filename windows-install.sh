@@ -79,6 +79,12 @@ cleanup_mount() {
         if ! umount "$p"; then
             echo "WARNING: $p is busy, trying lazy unmount"
             umount -l "$p" || true
+            sleep 2
+            if mountpoint -q "$p"; then
+                echo "WARNING: $p is still mounted after lazy unmount; killing processes holding it"
+                fuser -km "$p" 2>/dev/null || true
+                umount -l "$p" || true
+            fi
         fi
     fi
 }
