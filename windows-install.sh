@@ -751,11 +751,16 @@ verify_ready() {
 
 prepare_windows_media() {
     local download_dir
-    download_dir=$(choose_download_dir)
-    mkdir -p "$download_dir"
-
-    local windows_iso="$download_dir/Windows.iso"
-    local virtio_iso="$download_dir/VirtIO.iso"
+    local windows_iso
+    local virtio_iso
+    local windows_size
+    local virtio_size
+    local total_size
+    local total_zram_mb
+    local avail_ram_mb
+    local safe_ram_mb
+    local default_windows_iso_size=$((8 * 1024 * 1024 * 1024))
+    local default_virtio_iso_size=$((700 * 1024 * 1024))
 
     WINDOWS_ISO_URL="$(prompt_value "$WINDOWS_ISO_URL" "Enter Windows ISO URL: ")"
     VIRTIO_ISO_URL="$(prompt_value "$VIRTIO_ISO_URL" "Enter VirtIO ISO URL [default]: ")"
@@ -768,20 +773,91 @@ prepare_windows_media() {
               "$STATE_DIR/install_image_inspected" "$STATE_DIR/boot_wim_patched"
     fi
 
+    windows_size=$(get_content_length "$WINDOWS_ISO_URL" || echo 0)
+    virtio_size=$(get_content_length "$VIRTIO_ISO_URL" || echo 0)
+
+    if [ -z "${windows_size:-}" ] || [ "${windows_size:-0}" -le 0 ]; then
+        echo "WARNING: Windows ISO size unknown. Estimating ${default_windows_iso_size} bytes for zram decision."
+        windows_size=$default_windows_iso_size
+    fi
+    if [ -z "${virtio_size:-}" ] || [ "${virtio_size:-0}" -le 0 ]; then
+        echo "WARNING: VirtIO ISO size unknown. Estimating ${default_virtio_iso_size} bytes for zram decision."
+        virtio_size=$default_virtio_iso_size
+    fi
+
+    total_size=$((windows_size + virtio_size))
+    total_zram_mb=$((total_size / 1024 / 1024 + 1024))
+
+    avail_ram_mb=0
+    if command_exists free; then
+        avail_ram_mb=$(free -m | awk '/^Mem:/ {print $7}')
+    fi
+    if [ "$avail_ram_mb" -gt 512 ]; then
+        safe_ram_mb=$((avail_ram_mb - 512))
+    else
+        safe_ram_mb=0
+    fi
+
+    echo "Detected available RAM: ${avail_ram_mb}MB; reserving 512MB for system; safe zram budget: ${safe_ram_mb}MB"
+    echo "ISO size estimate: $((total_size / 1024 / 1024))MB; target zram size with buffer: ${total_zram_mb}MB"
+
+    if [ "$total_zram_mb" -gt 0 ] && [ "$total_zram_mb" -le "$safe_ram_mb" ]; then
+        echo "Attempting zram download with lz4 compression."
+        if setup_zram "$total_zram_mb"; then
+            USE_ZRAM=1
+            mkdir -p /mnt/zram0/windisk
+            download_dir="/mnt/zram0/windisk"
+        else
+            echo "WARNING: zram setup failed; falling back to disk downloads."
+            USE_ZRAM=0
+            download_dir=$(choose_download_dir)
+        fi
+    else
+        echo "Not enough RAM for zram download; using disk fallback."
+        USE_ZRAM=0
+        download_dir=$(choose_download_dir)
+    fi
+
+    mkdir -p "$download_dir"
+    windows_iso="$download_dir/Windows.iso"
+    virtio_iso="$download_dir/VirtIO.iso"
+
     if ! checkpoint_done downloads_completed; then
-        download_file "$WINDOWS_ISO_URL" "$windows_iso"
-        download_file "$VIRTIO_ISO_URL" "$virtio_iso"
+        if ! download_file "$WINDOWS_ISO_URL" "$windows_iso" || ! download_file "$VIRTIO_ISO_URL" "$virtio_iso"; then
+            if [ "${USE_ZRAM:-0}" -eq 1 ]; then
+                echo "WARNING: zram download failed; cleaning up zram and retrying on disk."
+                cleanup_zram
+                USE_ZRAM=0
+                download_dir=$(choose_download_dir)
+                mkdir -p "$download_dir"
+                windows_iso="$download_dir/Windows.iso"
+                virtio_iso="$download_dir/VirtIO.iso"
+                download_file "$WINDOWS_ISO_URL" "$windows_iso"
+                download_file "$VIRTIO_ISO_URL" "$virtio_iso"
+            else
+                fail "Download failed for Windows or VirtIO ISO."
+            fi
+        fi
         checkpoint_set downloads_completed
     fi
 
     [ -f "$windows_iso" ] || fail "Windows ISO missing after download"
     [ -f "$virtio_iso" ] || fail "VirtIO ISO missing after download"
 
+    WINDOWS_ISO="$windows_iso"
+    VIRTIO_ISO="$virtio_iso"
+
+    if [ "${USE_ZRAM:-0}" -eq 1 ]; then
+        if ! finalize_zram_downloads; then
+            echo "WARNING: Could not persist zram ISOs to /root/windisk. Keeping zram mount for extraction if available."
+        fi
+    fi
+
     if ! checkpoint_done windows_extracted; then
-        copy_windows_media "$windows_iso"
+        copy_windows_media "$WINDOWS_ISO"
     fi
     if ! checkpoint_done virtio_extracted; then
-        copy_virtio_media "$virtio_iso"
+        copy_virtio_media "$VIRTIO_ISO"
     fi
 
     inspect_install_image
