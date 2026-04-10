@@ -1,0 +1,14 @@
+# GRUB menuentry for Windows Installer (BIOS/MBR)
+menuentry "Windows Installer (BIOS) - ntldr fallback" {
+    insmod part_msdos
+    insmod ntfs
+    insmod ntldr
+    set root=(hd0,msdos2)
+    ntldr /bootmgr
+}
+
+# QUESTION FOR REVIEW TOOL:
+#
+# Our VPS uses BIOS/MBR (not UEFI). We want to create multiple, not identical, GRUB entries for Windows installer and Windows boot—for example, to provide failsafe/recovery options, fallback to different disks/partitions, or alternate boot methods.
+#
+# What are the best practices for structuring these entries for maximum reliability and user clarity? How should we label or configure them for robust recovery/failsafe scenarios? Are there any risks or important considerations for having multiple, distinct installer/boot entries in this scenario?

@@ -1,0 +1,42 @@
+# Prompt for Perplexity review tool: zram ISO download/copy automation
+
+**Goal:**
+- Use zram to create a compressed RAM disk for downloading large ISO files (e.g., Windows/virtio ISOs) on a VPS with limited disk space.
+- For each ISO:
+  1. Check available free memory (RAM).
+  2. Create a zram device sized to fit the ISO (with margin for compression ratio).
+  3. Format and mount the zram device.
+  4. Download the ISO directly to the zram mount.
+  5. Copy the ISO from zram to the target disk (e.g., /mnt/windisk/ or /mnt/).
+  6. Unmount and reset the zram device.
+  7. Repeat for the next ISO.
+- At each step, print free memory and ISO file sizes for user visibility.
+
+**Questions:**
+1. What is the best-practice Bash logic to:
+   - Detect available free memory (usable for zram)?
+   - Create, format, and mount a zram device for a given size?
+   - Download a file (ISO) directly to the zram mount?
+   - Copy the ISO to disk, then clean up zram?
+   - Repeat for multiple ISOs, ensuring no memory leaks or device conflicts?
+2. How to handle cases where the ISO is larger than available RAM (e.g., fallback to disk or split download)?
+3. What are the recommended safety checks and error handling for this workflow?
+4. How to display (in script output):
+   - Free memory before/after each step
+   - ISO file sizes (downloaded, copied)
+   - zram usage stats
+
+**Example code snippets requested:**
+- Bash functions for zram setup/teardown
+- Memory/size checks
+- Download/copy logic
+- Output formatting for memory and file sizes
+
+**Context:**
+- Target: Linux VPS, root access, Bash, zram kernel module available
+- Use-case: Downloading and staging large ISOs for Windows install automation
+- Disk space is limited, RAM is sufficient for at least one ISO at a time
+
+---
+
+Please provide best-practice advice and robust Bash code for this scenario.
