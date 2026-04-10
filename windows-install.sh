@@ -19,6 +19,105 @@ checkpoint_done() { [ -f "$STATE_DIR/$1" ]; }
 checkpoint_set() { touch "$STATE_DIR/$1"; }
 checkpoint_clear() { rm -f "$STATE_DIR/$1"; }
 
+command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+install_missing_dependencies() {
+    if ! command_exists apt-get; then
+        return 1
+    fi
+
+    local pkg
+    for cmd in "$@"; do
+        case "$cmd" in
+            wimlib-imagex) pkg="wimtools" ;;
+            curl) pkg="curl" ;;
+            rsync) pkg="rsync" ;;
+            aria2c) pkg="aria2" ;;
+            *) pkg="" ;;
+        esac
+        if [ -n "$pkg" ]; then
+            dpkg -s "$pkg" >/dev/null 2>&1 || apt-get install -y --no-install-recommends "$pkg"
+        fi
+    done
+}
+
+select_boot_wim_image_index() {
+    if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
+        echo ""
+        return
+    fi
+
+    local index
+    index=$(wimlib-imagex info "$MNT_INSTALL/sources/boot.wim" | awk '
+        BEGIN { first = "" }
+        /Index:/ { if (first == "") first = $2 }
+        /Name:/ {
+            name = substr($0, index($0, $2))
+            lname = tolower(name)
+            if (lname ~ /windows pe/) {
+                print $2
+                exit
+            }
+        }
+        END { if (first != "") print first }
+    ')
+
+    echo "$index"
+}
+
+create_unattended_startnet_cmd() {
+    local output_path="$1"
+
+    cat > "$output_path" <<'EOF'
+@echo off
+wpeinit
+if exist %SystemRoot%\System32\bypass.cmd (
+    echo Running embedded bypass
+    call %SystemRoot%\System32\bypass.cmd
+)
+for %%D in (X D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist %%D:\sources\bypass.cmd (
+        echo Running bypass from %%D:\sources\bypass.cmd
+        call %%D:\sources\bypass.cmd
+        goto :driver_done
+    )
+)
+for %%D in (X D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist %%D:\sources\virtio\amd64\w11\vioscsi.inf (
+        drvload %%D:\sources\virtio\amd64\w11\vioscsi.inf
+        goto :driver_done
+    )
+    if exist %%D:\sources\virtio\amd64\w11\viostor.inf (
+        drvload %%D:\sources\virtio\amd64\w11\viostor.inf
+        goto :driver_done
+    )
+    if exist %%D:\sources\virtio\amd64\w10\vioscsi.inf (
+        drvload %%D:\sources\virtio\amd64\w10\vioscsi.inf
+        goto :driver_done
+    )
+    if exist %%D:\sources\virtio\amd64\w10\viostor.inf (
+        drvload %%D:\sources\virtio\amd64\w10\viostor.inf
+        goto :driver_done
+    )
+)
+:driver_done
+X:\setup.exe
+EOF
+}
+
+create_bypass_cmd() {
+    local output_path="$1"
+
+    cat > "$output_path" <<'EOF'
+@echo off
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassSecureBootCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f
+reg add "HKLM\SYSTEM\Setup\LabConfig" /v BypassCPUCheck /t REG_DWORD /d 1 /f
+exit /b 0
+EOF
+}
+
 # --- FORCE CLEAN ---
 force_clean() {
     log "Performing full system clean and memory flush (PID $$)..."
@@ -292,28 +391,62 @@ fi
 log_step 6 "Patching installation media (startnet + Autounattend)..."
 
 if ! checkpoint_done boot_wim_patched; then
-    cat > /tmp/startnet.cmd <<'EOF'
-@echo off
-wpeinit
-:: load VirtIO storage driver for Windows 11 from the installer media
-for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    if exist %%D:\sources\virtio\vioscsi\w11\amd64\vioscsi.inf (
-        drvload %%D:\sources\virtio\vioscsi\w11\amd64\vioscsi.inf
-        goto :driver_done
-    )
-    if exist %%D:\sources\virtio\viostor\w11\amd64\viostor.inf (
-        drvload %%D:\sources\virtio\viostor\w11\amd64\viostor.inf
-        goto :driver_done
-    )
-)
-:driver_done
-X:\setup.exe
-EOF
+    if ! command_exists wimlib-imagex; then
+        log "wimlib-imagex not installed. Attempting to install missing dependency."
+        install_missing_dependencies wimlib-imagex || true
+    fi
 
-    wimlib-imagex update "$MNT_INSTALL/sources/boot.wim" 2 <<EOF
-add /tmp/startnet.cmd /Windows/System32/startnet.cmd
-EOF
+    if ! command_exists wimlib-imagex; then
+        log "ERROR: wimlib-imagex not installed. Cannot patch boot.wim."
+        exit 1
+    fi
 
+    if [ ! -f "$MNT_INSTALL/sources/boot.wim" ]; then
+        log "ERROR: boot.wim not found at $MNT_INSTALL/sources/boot.wim"
+        exit 1
+    fi
+
+    if [ ! -d "$MNT_INSTALL/sources/virtio" ]; then
+        mkdir -p "$MNT_INSTALL/sources/virtio"
+        umount "$ISO_MOUNT" 2>/dev/null || true
+        mount -o loop "$VIR_ISO" "$ISO_MOUNT"
+        rsync -ah "$ISO_MOUNT/" "$MNT_INSTALL/sources/virtio/"
+        umount "$ISO_MOUNT"
+    fi
+
+    create_bypass_cmd "$MNT_INSTALL/sources/bypass.cmd"
+
+    boot_image_index=$(select_boot_wim_image_index)
+    if [ -z "$boot_image_index" ]; then
+        log "ERROR: Unable to determine correct boot.wim image index."
+        exit 1
+    fi
+
+    create_unattended_startnet_cmd /tmp/startnet.cmd
+    create_bypass_cmd /tmp/bypass.cmd
+    rm -rf /tmp/virtio
+    mkdir -p /tmp/virtio
+    cp -a "$MNT_INSTALL/sources/virtio" /tmp/virtio/
+
+    printf 'add /tmp/virtio /sources/virtio\nadd /tmp/startnet.cmd /Windows/System32/startnet.cmd\nadd /tmp/bypass.cmd /Windows/System32/bypass.cmd\n' > /tmp/wimcmd.txt
+    wimlib-imagex update "$MNT_INSTALL/sources/boot.wim" "$boot_image_index" < /tmp/wimcmd.txt
+
+    rm -rf /tmp/virtio /tmp/startnet.cmd /tmp/bypass.cmd /tmp/wimcmd.txt
+
+    if ! wimlib-imagex list "$MNT_INSTALL/sources/boot.wim" "$boot_image_index" | grep -q -F "sources/virtio"; then
+        log "ERROR: boot.wim virtio driver tree injection did not persist."
+        exit 1
+    fi
+    if ! wimlib-imagex list "$MNT_INSTALL/sources/boot.wim" "$boot_image_index" | grep -q -F "startnet.cmd"; then
+        log "ERROR: boot.wim startnet injection did not persist."
+        exit 1
+    fi
+    if ! wimlib-imagex list "$MNT_INSTALL/sources/boot.wim" "$boot_image_index" | grep -q -F "bypass.cmd"; then
+        log "ERROR: boot.wim bypass injection did not persist."
+        exit 1
+    fi
+
+    log "boot.wim patch verified: virtio, startnet.cmd, bypass.cmd present."
     checkpoint_set boot_wim_patched
 else
     log "boot.wim already patched, skipping."
@@ -462,11 +595,12 @@ EOF
 set timeout=5
 set default=0
 
-menuentry 'Windows Installer (BIOS)' {
+menuentry 'Windows Installer (BIOS) - ntldr fallback' {
     insmod part_msdos
     insmod ntfs
+    insmod ntldr
     set root=(hd0,msdos2)
-    chainloader /bootmgr
+    ntldr /bootmgr
 }
 
 menuentry 'Windows 11 (installed)' {
@@ -475,7 +609,8 @@ menuentry 'Windows 11 (installed)' {
     insmod ntldr
     set root=(hd0,msdos1)
     makeactive
-    ntldr /bootmgr
+    chainloader +1
+    boot
 }
 EOF
         grub-install --target="i386-pc" --boot-directory="$MNT_INSTALL/boot" "$TARGET_DISK"
