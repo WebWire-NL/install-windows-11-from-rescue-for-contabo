@@ -459,7 +459,7 @@ copy_virtio_media() {
     echo "STAGE: copying VirtIO contents from $loop_dir to $MNT_INSTALL/sources/virtio..."
     rsync -a --info=progress2 --human-readable --stats "$loop_dir"/ "$MNT_INSTALL/sources/virtio"/
 
-    find "$MNT_INSTALL/sources/virtio" -type f | head -n 1 >/dev/null || fail "VirtIO copy failed"
+    find "$MNT_INSTALL/sources/virtio" -type f -print -quit >/dev/null || fail "VirtIO copy failed"
     checkpoint_set virtio_extracted
     trap - RETURN
 }
